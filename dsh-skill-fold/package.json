@@ -7,5 +7,10 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/boomzikazita/dsh-plugins.git",
+    "directory": "dsh-skill-fold"
   }
 }
