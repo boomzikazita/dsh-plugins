@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Model Fallback",
+    "description": "Reroutes a failed streaming model call to configured backup providers/models before any content is emitted."
+  }
+}

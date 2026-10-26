@@ -1,0 +1,297 @@
+{
+  "version": 1,
+  "note": "dsh-skill-fold / dsh-skill-search / dsh-skill-authoring 共享域表（2026-10-25 单源化）。改域表只改本文件，插件内置拷贝仅作回落。ponytail 族归 dev（编码工具）。",
+  "domainMap": {
+    "a-share-daily-analyst": "a-share",
+    "a-share-daily-report-pipeline": "a-share",
+    "a-share-market-analyst": "a-share",
+    "a-share-market-data": "a-share",
+    "a-share-market-news": "a-share",
+    "chief-of-staff": "gov-doc",
+    "chinese-official-documents": "gov-doc",
+    "gongwen-format": "gov-doc",
+    "gongwen-polish": "gov-doc",
+    "gongwen-writing-methods": "gov-doc",
+    "meeting-minutes": "gov-doc",
+    "senior-government-report-writing": "gov-doc",
+    "docx": "office-doc",
+    "nano-pdf": "office-doc",
+    "ocr-and-documents": "office-doc",
+    "officecli": "office-doc",
+    "pdf": "office-doc",
+    "pdf-cjk": "office-doc",
+    "powerpoint": "office-doc",
+    "ppt-structure-expert": "office-doc",
+    "xlsx": "office-doc",
+    "cli-anything": "dev",
+    "codebase-inspection": "dev",
+    "deepseek-harness-operations": "dev",
+    "project-analysis": "dev",
+    "project-context": "dev",
+    "python-debugpy": "dev",
+    "systematic-debugging": "dev",
+    "time-bomb-patching": "dev",
+    "github-auth": "github",
+    "github-blocked-fallback": "github",
+    "github-code-review": "github",
+    "github-issues": "github",
+    "github-pr-workflow": "github",
+    "github-project-assessment": "github",
+    "github-repo-management": "github",
+    "github-trending-cn": "github",
+    "chinese-publication-research": "writing",
+    "grounded-citations": "writing",
+    "humanizer": "writing",
+    "resume-authoring": "writing",
+    "agent-memory-system-design": "memory-kb",
+    "honcho-memory-setup": "memory-kb",
+    "llm-wiki": "memory-kb",
+    "memory": "memory-kb",
+    "obsidian": "memory-kb",
+    "siyuan-note": "memory-kb",
+    "task-context": "memory-kb",
+    "task-management": "memory-kb",
+    "wiki-ops": "memory-kb",
+    "huashu-nuwa": "thinking",
+    "maozedong-perspective": "thinking",
+    "mckinsey-content-editor": "thinking",
+    "policy-analysis-expert": "thinking",
+    "stepwise-execution": "thinking",
+    "linux-service-longevity": "ops",
+    "vaultwarden-selfhosted": "ops",
+    "computer-use": "ops",
+    "architecture-diagram": "design",
+    "multimodal-image-analysis": "design",
+    "web-content-capture": "design",
+    "interrupted-session-recovery": "dsh-platform",
+    "evaluating-ai-tools": "research",
+    "financial-report-deep-analysis": "research",
+    "technical-counter-examples": "research",
+    "hermes-agent-skill-authoring": "skill-eng",
+    "hithink-finance-market": "a-share",
+    "hithink-finance-financials": "a-share",
+    "hithink-finance-fund": "a-share",
+    "hithink-finance-index": "a-share",
+    "hithink-finance-shared": "a-share",
+    "hithink-finance-special-data": "a-share",
+    "hithink-finance-data": "a-share",
+    "hithink-finance-valuation": "a-share",
+    "hithink-finance-research": "a-share",
+    "hithink-finance-symbol": "a-share",
+    "access-governance": "ops",
+    "async-result-verification": "dev",
+    "baseline-diff-monitoring": "ops",
+    "blocked-page-recovery": "research",
+    "competitor-news-monitor": "research",
+    "junshi": "thinking",
+    "linux-machine-cleanup": "ops",
+    "merge-reconciler": "github",
+    "ponytail": "dev",
+    "ponytail-debt": "dev",
+    "ponytail-help": "dev",
+    "ponytail-review": "dev",
+    "reddit-reading": "research",
+    "remote-desktop-access": "ops",
+    "requesting-code-review": "dev",
+    "rss-feeds": "research",
+    "sdlc-review": "dev",
+    "simplify-code": "dev",
+    "spike": "dev",
+    "test-driven-development": "dev",
+    "vault-fragment-lookup": "memory-kb",
+    "weekly-review-planning": "memory-kb",
+    "dsh-operations": "dsh-platform"
+  },
+  "domains": [
+    {
+      "id": "a-share",
+      "label": "A股投资",
+      "keywords": [
+        "A股",
+        "a 股",
+        "股票",
+        "行情",
+        "复盘",
+        "北向",
+        "涨停",
+        "market",
+        "stock"
+      ]
+    },
+    {
+      "id": "gov-doc",
+      "label": "政务公文",
+      "keywords": [
+        "公文",
+        "请示",
+        "通知",
+        "报告",
+        "纪要",
+        "汇报",
+        "讲话",
+        "gongwen",
+        "official"
+      ]
+    },
+    {
+      "id": "office-doc",
+      "label": "办公文档",
+      "keywords": [
+        "Word",
+        "Excel",
+        "PPT",
+        "PDF",
+        "docx",
+        "xlsx",
+        "pptx",
+        "排版",
+        "文档",
+        "OCR",
+        "扫描",
+        "提取文字"
+      ]
+    },
+    {
+      "id": "dev",
+      "label": "代码开发",
+      "keywords": [
+        "调试",
+        "debug",
+        "代码",
+        "CLI",
+        "harness",
+        "patch",
+        "编译",
+        "git"
+      ]
+    },
+    {
+      "id": "github",
+      "label": "GitHub 生态",
+      "keywords": [
+        "github",
+        "pull request",
+        "merge request",
+        "issue",
+        "clone",
+        "repository",
+        "repo ",
+        "ci/cd",
+        "github action"
+      ]
+    },
+    {
+      "id": "writing",
+      "label": "写作与内容",
+      "keywords": [
+        "写作",
+        "润色",
+        "简历",
+        "引用",
+        "出版",
+        "humanize",
+        "citations"
+      ]
+    },
+    {
+      "id": "memory-kb",
+      "label": "记忆与知识管理",
+      "keywords": [
+        "记忆",
+        "召回",
+        "wiki",
+        "笔记",
+        "Obsidian",
+        "思源",
+        "memory",
+        "知识库"
+      ]
+    },
+    {
+      "id": "thinking",
+      "label": "思维框架",
+      "keywords": [
+        "思维",
+        "框架",
+        "分析",
+        "矛盾",
+        "麦肯锡",
+        "结构化",
+        "perspective"
+      ]
+    },
+    {
+      "id": "ops",
+      "label": "系统运维",
+      "keywords": [
+        "运维",
+        "部署",
+        "Docker",
+        "服务",
+        "vaultwarden",
+        "长寿",
+        "service"
+      ]
+    },
+    {
+      "id": "design",
+      "label": "视觉与设计",
+      "keywords": [
+        "架构图",
+        "SVG",
+        "图片",
+        "图像",
+        "设计",
+        "截图",
+        "vision",
+        "读图",
+        "看图",
+        "识别",
+        "OCR",
+        "照片"
+      ]
+    },
+    {
+      "id": "dsh-platform",
+      "label": "DSH 平台",
+      "keywords": [
+        "dsh",
+        "会话恢复",
+        "中断",
+        "resume",
+        "harness"
+      ]
+    },
+    {
+      "id": "research",
+      "label": "分析与研究",
+      "keywords": [
+        "研究",
+        "评估",
+        "财报",
+        "反例",
+        "调研",
+        "research",
+        "audit"
+      ]
+    },
+    {
+      "id": "skill-eng",
+      "label": "技能工程",
+      "keywords": [
+        "技能工程",
+        "技能蒸馏",
+        "技能门禁",
+        "skill_audit",
+        "skill_scaffold",
+        "skill 创建",
+        "skill 蒸馏"
+      ]
+    },
+    {
+      "id": "other",
+      "label": "其他",
+      "keywords": []
+    }
+  ]
+}

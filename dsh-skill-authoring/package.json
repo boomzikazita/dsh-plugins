@@ -1,0 +1,25 @@
+{
+  "name": "@boomzzzzzz/dsh-skill-authoring",
+  "version": "0.2.1",
+  "type": "module",
+  "main": "index.js",
+  "description": "DSH skill 创建与审计插件（vibe-coding-cn 9 项质量门禁）：skill_check_name → skill_mece_check → skill_audit → skill_scaffold 四环 + SKILL.md 写入门禁。v0.2.0：适配 dsh 0.2；写入门禁读 exec.arguments ?? exec.args 双读、edit 不再跳过预检；skill_mece_check 迁入。v0.2.1：告警注入兜底+失败回队（dsh-llm 不可解析时不再静默丢告警）、写入门禁作用域改为 DSH 实际装载的 skills 根（原硬编码 ~/.dsh/skills 为空致门禁从不触发）、skill_audit 裸名经 ctx.skills.list 解析真实路径并渲染 ✓/✗ 表、领域映射补 hithink-finance-*。",
+  "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

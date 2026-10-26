@@ -1,0 +1,7 @@
+# dsh-skill-authoring bundle patch — skill 创建 9 项门禁执行器
+# 挂载：把 dsh-skill-authoring 加入 profile 的 dsh.profile.bundles
+# v0.2.0：skill_mece_check 自 dsh-skill-lazy 并入；Python 解释器可用 config.python 覆盖（默认 python3）
+- insert:
+    - id: skill-authoring
+      name: 'dsh-skill-authoring'
+      config: {}

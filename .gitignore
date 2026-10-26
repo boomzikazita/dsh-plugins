@@ -1,0 +1,5 @@
+node_modules/
+tarballs/
+_harness/
+_plugin_push/
+*.log

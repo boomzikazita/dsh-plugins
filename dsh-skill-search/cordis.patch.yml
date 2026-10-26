@@ -1,0 +1,7 @@
+# dsh-skill-search bundle patch — skill_search 按需检索
+# 挂载：把 dsh-skill-search 加入 profile 的 dsh.profile.bundles
+- insert:
+    - id: skill-search
+      name: 'dsh-skill-search'
+      config:
+        topK: 6

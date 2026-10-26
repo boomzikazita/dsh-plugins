@@ -1,0 +1,25 @@
+{
+  "name": "@boomzzzzzz/dsh-skill-search",
+  "version": "0.1.1",
+  "type": "module",
+  "main": "index.js",
+  "description": "DSH skill 按需检索：skill_search 工具（14 域 MECE 分组 + bigram 评分 + usage.json 调用频率排序），从 dsh-skill-lazy 抽取。v0.1.1：领域映射补 hithink-finance-*（10 个，修 dev 的 'CLI' 关键词把它们误分到代码开发）、a-share 关键词补 'a 股' 空格变体、覆盖报告的空域由逐行刷屏改为一行汇总。",
+  "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
