@@ -6,7 +6,8 @@
   "author": "bowenliang123",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bowenliang123/dsh-context.git"
+    "url": "git+https://github.com/boomzikazita/dsh-plugins.git",
+    "directory": "dsh-context"
   },
   "homepage": "https://github.com/bowenliang123/dsh-context",
   "bugs": {

@@ -39,5 +39,10 @@
         "@deepseek-ai/dsh-client-ui-layout"
       ]
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/boomzikazita/dsh-plugins.git",
+    "directory": "dsh-model-fallback"
   }
 }
