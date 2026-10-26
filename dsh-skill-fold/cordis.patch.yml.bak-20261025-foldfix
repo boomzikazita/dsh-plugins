@@ -1,0 +1,9 @@
+# dsh-skill-fold bundle patch — skill 目录折叠
+- insert:
+    - id: skill-fold
+      name: 'dsh-skill-fold'
+      config:
+        catalogDescriptionMaxLength: 40
+        foldEnabled: true
+        foldKeepDomains: 1
+        foldKeepFrequent: 5

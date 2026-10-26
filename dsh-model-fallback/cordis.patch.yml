@@ -1,0 +1,28 @@
+# dsh-model-fallback bundle patch — 主模型失败自动切换备用模型
+# 机制：挂 llm/stream 瀑布；finish.kind==='error' 且未产出内容块时，
+# 用 chains 里的下一个 provider/model 重发完整请求（消息/系统提示/工具表原样携带）。
+# aborted（用户取消）永不切换；skipCodes 命中的失败码不切换。
+- insert:
+    - id: model-fallback
+      name: 'dsh-model-fallback'
+      config:
+        # 只在尚未产出任何内容块时切换（防止两个模型的半截输出拼成一条消息）
+        onlyBeforeContent: true
+        # 触发切换的失败码白名单：空 = 所有 error 终态都切换
+        codes: []
+        # 永不切换的失败码；留空 = 所有 error 终态都切换
+        skipCodes: []
+        # 切换事件日志（ndjson，一行一次切换）
+        logFile: '~/.dsh/model-fallback/events.ndjson'
+        chains:
+          # 主路由 provider 填 '*' = 任意（跟随 设置→模型 里当前选用的模型，换主模型不用改这里）；
+          # 也可填具体 provider 精确匹配；from.model 省略 = 该 provider 的任意模型
+          - from: { provider: '*' }
+            to:
+              # 备用：阿里云百炼 CodingPlan（qwen-token-plan-cn，llm-pi-ai 已配置 apiKeyEnv）
+              # 注意：model 填该端点实际可用的模型 id；填错会让该目标再失败并落到链尾
+              - provider: 'qwen-token-plan-cn'
+                model: 'qwen3-coder-plus'
+                # 可选项：跨 provider 时 reasoningEffort 默认丢弃（语义不通用），需要可显式指定
+                # reasoningEffort: 'high'
+                # temperature / maxTokens / stop 同理可按目标覆盖
