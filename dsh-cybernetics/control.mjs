@@ -184,5 +184,20 @@ export function makeControl({ cfg, state, logState, logFile }) {
     return first
   }
 
-  return { pushResultBuf, queueWarn, currentMode, adjustControl, recoverStateFromLog, replayPHat, slowestTools, healthOf, matchFeedforward }
+  // ---------- verify-on-stop 守卫（v4.5，2026-10-28；灵感 [arXiv:2609.00006] Hermes） ----------
+  // 完成声明纪律（「无证据的完成视为降级报告」）原文靠 prompt 自觉，此处下沉为机制：
+  // 本 turn 有 write/edit 写入但无任何 read/grep/glob 回读 → turn 边界注入提醒。
+  // 判定只看工具调用事实，不做文件级配对（YAGNI：工具级足够拦住「写了就走」）。
+  const WRITE_TOOLS = new Set(['write', 'edit'])
+  const VERIFY_TOOLS = new Set(['read', 'grep', 'glob', 'read_image'])
+  function trackWriteVerify(s, toolName) {
+    if (WRITE_TOOLS.has(toolName)) s.turnWrites.push(toolName)
+    else if (VERIFY_TOOLS.has(toolName)) s.turnVerifies += 1
+  }
+  function verifyOnStopWarn(s) {
+    if (s.turnWrites.length === 0 || s.turnVerifies > 0) return null
+    return `[verify-on-stop] 上一轮有 ${s.turnWrites.length} 次文件写入（${[...new Set(s.turnWrites)].join('/')}）但无任何回读验证（read/grep/glob）。完成声明前请回读目标文件确认落盘内容——「写了但没验证」属降级报告。`
+  }
+
+  return { pushResultBuf, queueWarn, currentMode, adjustControl, recoverStateFromLog, replayPHat, slowestTools, healthOf, matchFeedforward, trackWriteVerify, verifyOnStopWarn }
 }

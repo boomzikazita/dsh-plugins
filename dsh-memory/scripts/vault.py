@@ -77,7 +77,7 @@ def cmd_init() -> None:
     KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
     KEY_FILE.write_bytes(Fernet.generate_key())
     os.chmod(KEY_FILE, 0o600)
-    print(f"vault: 密钥已生成 {KEY_FILE} (0600)。请备份到 Vaultwarden，丢失将无法解密 VAULT.md.enc")
+    print(f"vault: 密钥已生成 {KEY_FILE} (0600)。请备份到安全位置（如离线介质），丢失将无法解密 VAULT.md.enc")
 
 
 def cmd_set(ref: str, value: str) -> None:

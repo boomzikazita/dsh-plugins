@@ -21,6 +21,23 @@ import {
   healthScorePure,
   classifyToolError,
 } from '../core.mjs'
+import { makeControl } from '../control.mjs'
+import { createSessionState } from '../state.mjs'
+
+test('verify-on-stop（v4.5）：写入无回读触发提醒，写入+回读静默，纯回读不提醒', () => {
+  const cfg = { control: { oscillationWindow: 10, oscillationRatio: 0.7 } }
+  const { trackWriteVerify, verifyOnStopWarn } = makeControl({ cfg, state: {}, logState: () => {}, logFile: '/dev/null' })
+  const s = createSessionState('t-verify-1')
+  trackWriteVerify(s, 'write')
+  trackWriteVerify(s, 'bash') // bash 不计写入也不计回读
+  assert.ok(verifyOnStopWarn(s)?.includes('verify-on-stop'), '写入无回读应提醒')
+  trackWriteVerify(s, 'read')
+  assert.equal(verifyOnStopWarn(s), null, '写入后回读应静默')
+  const s2 = createSessionState('t-verify-2')
+  trackWriteVerify(s2, 'grep')
+  assert.equal(verifyOnStopWarn(s2), null, '纯回读不提醒')
+  assert.equal(s2.turnWrites.length, 0)
+})
 
 test('EMA 滤波：连续失败收敛到 1，连续成功收敛到 0', () => {
   let p = 0

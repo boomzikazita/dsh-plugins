@@ -65,12 +65,23 @@ def load_entries(track: str) -> list:
     if not fpath.exists():
         return []
     raw = fpath.read_text(encoding="utf-8")
-    return raw.split("\n§\n")
+    # 2026-10-28 修（实证事故）：split("\n§\n") 只认独立成行的 §，遇「§ 标题」混排
+    # 会把前 7 条并成一条 → replace 按子串命中该块一次误删 7 条（git 恢复）。
+    # 统一为 split("§") 口径，与 rrf_recall / memory_zero_hit / layer_audit / index.js 对齐。
+    return [e for e in raw.split("§") if e.strip()]
 
 
 def save_entries(track: str, entries: list) -> str:
     fpath = MEM_DIR / TRACK_FILES[track]
-    content = "\n§\n".join(e.strip() for e in entries if e and e.strip())
+    blocks = []
+    for e in entries:
+        e = e.strip()
+        if not e:
+            continue
+        e = e.lstrip("§").strip()  # 统一由本函数补前缀，防调用方自带 § 造成双写
+        blocks.append(e)
+    # 2026-10-28 修：首条补回 "§ " 前缀（split("§") 后条目不带 §，原先首条落盘丢前缀）
+    content = "§ " + "\n§\n".join(blocks)
     content = content.rstrip() + "\n"
     # 原子写
     fd, tmp = tempfile.mkstemp(dir=str(MEM_DIR), prefix=".l1merge-", suffix=".tmp")

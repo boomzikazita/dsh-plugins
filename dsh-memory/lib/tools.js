@@ -311,7 +311,7 @@ export function registerMemoryTools(ctx, d) {
     name: 'memory_vault_set',
     description: '写入加密库条目（敏感内容专用）。写入后明文只允许出现 → vault:<ref> 引用，禁止出现原文',
     parameters: {
-      ref: { type: 'string', required: true, description: '条目引用（如 person/句号、credential/vaultwarden）' },
+      ref: { type: 'string', required: true, description: '条目引用（如 person/句号、credential/xxx）' },
       value: { type: 'string', required: true, description: '条目内容（敏感原文）' },
     },
     output: { schema: { type: 'string', description: '结果' }, render: (args, value) => [{ type: 'text', text: value }] },
@@ -427,7 +427,7 @@ export function registerMemoryTools(ctx, d) {
     description:
       '统一资源视图（只读）：一个入口访问多数据源。verb=ls 列举域内容 / read 读取引用 / search 检索。' +
       '命名空间：mem://（实体表 person/project/topic、规则条目、MEMORY.md/USER.md/DREAMS.md）、' +
-      'wiki://（Obsidian 知识库目录与笔记）、scripts://（~/.dsh/scripts + ~/.hermes/scripts 脚本清单）。' +
+      'wiki://（Obsidian 知识库目录与笔记）、scripts://（~/.dsh/scripts 脚本清单）。' +
       '引用格式 <ns>://<路径>，如 mem://（总览）、mem://person/句号（沿边+摘要）、mem://MEMORY.md、wiki://concepts。' +
       'search 为跨域检索（mem 语义召回 + wiki grep + 图谱沿边）；ls 加 filter 按子串过滤。' +
       '注意：深度语义召回请用 memory_recall；加密库请用 memory_vault_get；写操作请用原工具。',

@@ -1,6 +1,12 @@
 /**
  * dsh-cybernetics — 控制论内核 v4 运行时（DeepSeek Harness 插件）
  *
+ * v4.5（2026-10-28，verify-on-stop 守卫，灵感 [arXiv:2609.00006] Hermes）：
+ *   完成声明纪律从 prompt 自觉下沉为机制——本 turn 有 write/edit 写入但无
+ *   read/grep/glob 回读 → turn 边界注入提醒 + logState 事件 verify-on-stop。
+ *   判定只看工具调用事实（control.mjs trackWriteVerify/verifyOnStopWarn），
+ *   不做文件级配对（YAGNI）；单测覆盖三态（写入无回读/写入+回读/纯回读）。
+ *
  * v0.2.1（2026-10-15，修 6 处运行期缺陷）：
  *   1. 警告注入恒失效：@deepseek-ai/dsh-llm 裸导入在插件真实目录不可解析，且失败即整批丢弃
  *      → 等价兜底消息工厂 + 注入失败回队 + 留痕（原日志 9/9 dropped-warn）
@@ -182,7 +188,7 @@ export function apply(ctx, config = {}) {
   }
 
   // ---------- 控制律与状态回放（2026-10-25 下沉 control.mjs，verbatim；模块预算治理） ----------
-  const { pushResultBuf, queueWarn, currentMode, adjustControl, recoverStateFromLog, replayPHat, slowestTools, healthOf, matchFeedforward } = makeControl({ cfg, state, logState, logFile })
+  const { pushResultBuf, queueWarn, currentMode, adjustControl, recoverStateFromLog, replayPHat, slowestTools, healthOf, matchFeedforward, trackWriteVerify, verifyOnStopWarn } = makeControl({ cfg, state, logState, logFile })
 
   // ---------- 2. tools/pre-execute：计数 + 前馈拦截 + 观测收集（B7 会话级） ----------
   ctx.on('tools/pre-execute', (exec, next) => {
@@ -195,6 +201,7 @@ export function apply(ctx, config = {}) {
     s.totalSessionCalls += 1
     state.observedTools.add(toolName) // P0-2：被动观测宿主工具
     s.sessionObserved.add(toolName)
+    trackWriteVerify(s, toolName) // v4.5 verify-on-stop：本 turn 写入/回读计数
     if (state.observedTools.size !== state.obsPersistedSize) persistObservedTools()
 
     // P2 冗余/熵窗口（A1 修复：hash 基于参数文本，见 core.redundantHash）
@@ -384,12 +391,19 @@ export function apply(ctx, config = {}) {
     const SKILL_DISCOVERY_TOOLS = new Set(['skill_search', 'skill_mece_check', 'skill', 'list_agents'])
     if (isError && !SKILL_DISCOVERY_TOOLS.has(tool) && s.divergenceStreak >= 2 && !s.failedHintSent) {
       s.failedHintSent = true
-      const lastArgs = execArgsText(exec) || ''
-      const ctxHint = lastArgs ? `（最近失败调用：\`${tool}\` ${lastArgs.slice(0, 120)}）` : ''
+      // v0.2.2（2026-10-27 实证，k3 会话 52 连跪）：①不回显失败调用的参数原文——
+      // 陷入模式锁定的模型会照抄上下文里的调用，回显 = 每轮再示范一遍错误写法；
+      // ②streak≥5 不再推 skill_search（实测方向跑偏：让人为 bash 查 OCR 技能），
+      // 改为命令式熔断：停手、换路、问用户。
       logState({ ts: Date.now(), event: 'skill-search-fallback', sid, tool, streak: s.divergenceStreak })
-      queueWarn(s, `[能控性兜底] 连续 ${s.divergenceStreak} 次工具调用失败，疑似在用底层工具硬解、而非检索既有能力。` +
-        `请立即调用 \`skill_search\` 工具检索「${tool}」相关关键词，确认是否有对口技能/现成脚本（如 OCR、读图、转换类），` +
-        `再决定下一步；禁止在未检索技能库的情况下判定任务不可行。${ctxHint}`)
+      if (s.divergenceStreak >= 5) {
+        queueWarn(s, `[能控性熔断] 已连续 ${s.divergenceStreak} 次失败。立即停止重复上一次调用——同样的参数不会再产出不同结果。` +
+          `请改用不同方法/参数，或直接用文字向用户说明卡点并请求指示。禁止原样重试。`)
+      } else {
+        queueWarn(s, `[能控性兜底] 连续 ${s.divergenceStreak} 次工具调用失败（工具：\`${tool}\`），疑似在用底层工具硬解、而非检索既有能力。` +
+          `请调用 \`skill_search\` 检索「${tool}」相关关键词，确认是否有对口技能/现成脚本（如 OCR、读图、转换类），` +
+          `再决定下一步；禁止在未检索技能库的情况下判定任务不可行。`)
+      }
     }
 
     logState(entry)
@@ -410,10 +424,20 @@ export function apply(ctx, config = {}) {
         const turn = payload?.turn
         if (turn === undefined || s.currentTurn !== turn) {
           if (turn !== undefined) s.currentTurn = turn
+          // v4.5 verify-on-stop：turn 边界先结算上一轮——有写入无回读则注入提醒（机制化完成声明纪律）
+          const vsWarn = verifyOnStopWarn(s)
+          if (vsWarn) {
+            logState({ ts: Date.now(), event: 'verify-on-stop', sid, writes: s.turnWrites.length, tools: [...new Set(s.turnWrites)] })
+            queueWarn(s, vsWarn)
+          }
+          s.turnWrites = []
+          s.turnVerifies = 0
           s.toolCallsInTurn = 0
           s.warnedOverLimit = false
+          // v0.2.2：failedHintSent 移入 turn 边界块——原先在块外每 step 都重置，
+          // 导致同一 turn 内「能控性兜底」按 step 重复注入（52 连跪事件单 turn 注入 51 次）
+          s.failedHintSent = false
         }
-        s.failedHintSent = false // 连续失败兜底提示每轮允许重新触发
         if (s.pendingWarns.length === 0) return decision
         const warns = s.pendingWarns
         s.pendingWarns = []

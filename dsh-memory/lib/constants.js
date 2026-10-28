@@ -29,7 +29,7 @@ export const ROUTE_HINT = {
 // primer 门控：实体/主题关键词（命中才召回注入；默认零注入）
 export const PRIMER_GATE = [
   '记忆', '记住', '忘了', '偏好', '人物', '档案', '端口', '配置', '会议纪要',
-  'A股', '控制论', 'Honcho', 'ZeroTier', '飞书', 'Vaultwarden', '老郑', '句号',
+  'A股', '控制论', 'Honcho', 'ZeroTier', '飞书', '老郑', '句号',
 ]
 
 /**
