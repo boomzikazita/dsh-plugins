@@ -310,6 +310,78 @@ def extract_signals(limit: int = 200) -> int:
     return found
 
 
+CYBER_STATE_LOG = HOME / ".dsh" / "cybernetics" / "state_log.ndjson"
+
+
+def negatives_digest(days: int = 7) -> str:
+    """负证据摘要（2026-10-28，③ 负证据入库；灵感 EvoTrainer 四层诊断 / MemoHarness 经验库）。
+
+    汇总两路「失败证据」供周检消费（只读，不写 L1）：
+      ① corrections.jsonl：用户驳回/纠正信号（近 N 天条数 + 最近样本）
+      ② cybernetics state_log：工具失败归因（errorType 分布）、verify-on-stop、
+         skill-search-fallback、saturation-warn 等防守事件计数
+    输出文本直接进周检报告；重复出现的模式由 memory-idle-extract（agent）蒸馏成提案。
+    """
+    since = datetime.datetime.now() - datetime.timedelta(days=days)
+    lines = [f"## 🧯 负证据（近 {days} 天）"]
+    # ① 用户纠正
+    corr_total = 0
+    corr_recent = []
+    if CORRECTIONS_FILE.exists():
+        try:
+            for line in CORRECTIONS_FILE.open(encoding="utf-8"):
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                ts = r.get("ts", "")
+                try:
+                    t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    continue
+                if t >= since:
+                    corr_total += 1
+                    corr_recent.append((ts[:10], (r.get("text") or "")[:60]))
+        except Exception:
+            pass
+    lines.append(f"- 用户纠正信号: {corr_total} 条")
+    for d, t in corr_recent[-3:]:
+        lines.append(f"    · [{d}] {t}")
+    # ② cybernetics 防守事件
+    counts: dict = {}
+    if CYBER_STATE_LOG.exists():
+        try:
+            for line in CYBER_STATE_LOG.open(encoding="utf-8"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                ts = e.get("ts")
+                if not ts:
+                    continue
+                if datetime.datetime.fromtimestamp(ts / 1000) < since:
+                    continue
+                ev = e.get("event")
+                if ev == "result" and e.get("delta") == 1 and e.get("errorType"):
+                    counts[f"失败:{e['errorType']}"] = counts.get(f"失败:{e['errorType']}", 0) + 1
+                elif ev in ("verify-on-stop", "skill-search-fallback", "saturation-warn",
+                            "divergence-warn", "oscillation-warn", "dropped-warn"):
+                    counts[ev] = counts.get(ev, 0) + 1
+        except Exception:
+            pass
+    if counts:
+        for k in sorted(counts, key=lambda k: -counts[k]):
+            lines.append(f"- {k}: {counts[k]} 次")
+    else:
+        lines.append("- cybernetics 防守事件: 0")
+    if corr_total == 0 and not counts:
+        lines.append("- 本周无负证据（正常）")
+    return "\n".join(lines)
+
+
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "index"
     if cmd == "index":
@@ -320,6 +392,8 @@ def main() -> None:
     elif cmd == "signals":
         n = extract_signals()
         print(f"harvest: 提取纠正信号 {n} 条 → corrections.jsonl")
+    elif cmd == "negatives":
+        print(negatives_digest(int(sys.argv[2]) if len(sys.argv) > 2 else 7))
     else:
         raise SystemExit(f"harvest: 未知命令 {cmd}")
 
