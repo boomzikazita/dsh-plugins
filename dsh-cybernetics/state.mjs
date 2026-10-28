@@ -98,5 +98,7 @@ export function createSessionState(sid, seed = {}) {
     lastStartTs: 0,            // B5 最近一次 pre-execute 起点
     lastStartTool: '',
     failedHintSent: false,     // 连续失败→skill_search 兜底提示已注入标记（每轮重置）
+    turnWrites: [],            // v4.5 verify-on-stop：本 turn 内 write/edit 调用记录
+    turnVerifies: 0,           // v4.5 verify-on-stop：本 turn 内 read/grep/glob 回读计数
   }
 }

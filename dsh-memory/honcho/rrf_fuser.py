@@ -43,7 +43,7 @@ def _memory_dir() -> Path:
 # ---------------------------------------------------------------------------
 _KNOWN_PERSONS = frozenset({'老郑', '陈丹', '句号', '藏妤', '刘兰', '何启敏', 'sophia'})
 _KNOWN_PROJECTS = frozenset({'HMS', 'Shadow-Weave', 'RRF', 'Hermes', 'Mem0', 'Letta', 'Memory-OS'})
-_KNOWN_TOPICS = frozenset({'A股', '情感', '控制论', '会议纪要', 'Vaultwarden', 'Honcho', '零信任', 'RDP', 'ZeroTier'})
+_KNOWN_TOPICS = frozenset({'A股', '情感', '控制论', '会议纪要', 'Honcho', '零信任', 'RDP', 'ZeroTier'})
 
 _ALL_ENTITIES = {
     *(p.lower() for p in _KNOWN_PERSONS),
@@ -165,7 +165,9 @@ def _l1_keyword_match(query: str, top_k: int = 10) -> List[str]:
         if not fpath.exists():
             continue
         content = fpath.read_text(encoding='utf-8')
-        entries = content.split('\n§\n')
+        # 2026-10-28 修：split('\n§\n') 只认独立成行 §，混排时把多条并成一条（召回质量受损）；
+        # 统一 split('§') 口径（与 rrf_recall/memory_zero_hit 对齐）
+        entries = [e for e in content.split('§') if e.strip()]
         for i, entry in enumerate(entries):
             entry_lower = entry.lower()
             score = 0
@@ -475,7 +477,7 @@ def _get_item_text(item_id: str) -> Tuple[str, str]:
         try:
             idx = int(idx_str)
             mem_path = _memory_dir() / fname
-            entries = mem_path.read_text(encoding='utf-8').split('\n§\n')
+            entries = [e for e in mem_path.read_text(encoding='utf-8').split('§') if e.strip()]
             if idx < len(entries):
                 entry = entries[idx].strip()
                 # Reference following: entry contains '→ wiki/...' → read target
@@ -824,7 +826,7 @@ def _l6_entity_recall(query: str, top_k: int = 8) -> List[str]:
         fpath = memory_dir / fname
         if fpath.exists():
             try:
-                l1_entries[fname] = fpath.read_text(encoding='utf-8').split('\n§\n')
+                l1_entries[fname] = [e for e in fpath.read_text(encoding='utf-8').split('§') if e.strip()]
             except OSError:
                 l1_entries[fname] = []
 

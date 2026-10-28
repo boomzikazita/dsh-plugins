@@ -59,8 +59,11 @@ def load_l1(track: str) -> list:
     fpath = MEM_DIR / fname
     if not fpath.exists():
         return []
+    # 2026-10-28 修：split("\n§\n") 只认独立成行 §，混排时索引与 conflict_merge 错位；
+    # 统一 split("§") 口径（与 conflict_merge.load_entries 同过滤，保证 index 语义一致）
+    entries = [e for e in fpath.read_text(encoding="utf-8").split("§") if e.strip()]
     out = []
-    for i, ent in enumerate(fpath.read_text(encoding="utf-8").split("\n§\n")):
+    for i, ent in enumerate(entries):
         e = ent.strip()
         if len(e) >= 10:
             out.append((i, e))

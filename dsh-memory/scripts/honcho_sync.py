@@ -14,6 +14,7 @@
 """
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -37,6 +38,42 @@ MAX_MSG_PER_RUN = 50  # 单次上限，防止灌爆
 MAX_TEXT_LEN = 8000   # 单条上限：超长文档转储会让整批 422（2026-10-18 实证）
 SKIP_PREFIXES = ("> ##", "## ", "```")  # 文档转储/代码块，不是记忆
 
+# ── 出站脱敏（2026-10-27，移植自 plastic-labs/dsh-honcho src/redact.ts，MIT）──
+# 背景：本脚本把 user 消息原文直灌 Honcho，guard 钩子只拦写文件工具、管不到这条
+# 出站链——粘贴过的 .env / token 会原样进 L3。"capture without scrubbing is an
+# exfiltration path"。规则与 dsh-honcho/claude-honcho 保持一致，均为 best-effort。
+_REDACT_RULES = [
+    # KEY=value 赋值（PGPASSWORD=..., AWS_SECRET_ACCESS_KEY=...）
+    (re.compile(r"\b(\w*(?:PASSWORD|PASSWD|PWD|SECRET|TOKEN|API_?KEY|ACCESS_KEY|CREDENTIALS?)\w*)"
+                r"\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s;|&\"']+)", re.I), r"\1=***"),
+    # --password / --token 风格 CLI 参数
+    (re.compile(r"(--(?:password|passwd|pwd|token|api-?key|secret|auth)[= ])"
+                r"(?:\"[^\"]*\"|'[^']*'|[^\s;|&\"']+)", re.I), r"\1***"),
+    # Authorization 头
+    (re.compile(r"(authorization:\s*(?:bearer|basic|token)\s+)[^\s\"']+", re.I), r"\1***"),
+    # URL 内嵌凭据（scheme://user:pass@host）
+    (re.compile(r"([a-z][a-z0-9+.-]*://[^/\s:@]+:)[^@\s]+@", re.I), r"\1***@"),
+    # 知名 token 形状：Honcho/AWS/sk-/GitHub/Slack/GitLab/npm
+    (re.compile(r"\b(?:hch[_-]?[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{16,}"
+                r"|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+                r"|xox[baprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{36})\b"),
+     "***"),
+]
+
+
+def redact_secrets(text: str) -> str:
+    for pat, rep in _REDACT_RULES:
+        text = pat.sub(rep, text)
+    return text
+
+
+# telemetry：服务端可区分写入来源（借鉴 dsh-honcho 的 X-Honcho-Plugin 头）
+try:
+    _PKG_VER = json.loads((Path(__file__).parent.parent / "package.json").read_text())["version"]
+except Exception:
+    _PKG_VER = "unknown"
+_PLUGIN_HEADER = f"dsh-memory/{_PKG_VER}"
+
 import urllib.request
 
 
@@ -44,7 +81,8 @@ def _req(method, path, body=None, timeout=60):
     url = HONCHO_BASE + path
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          "X-Honcho-Plugin": _PLUGIN_HEADER})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
@@ -91,7 +129,7 @@ def collect_user_messages(days: int) -> list:
             # 跳过明显的纯工具结果回显（含长代码块/路径列表）
             if content.startswith(("```", "Error", "Traceback")):
                 continue
-            msgs.append({"key": f"{ws_name}/{sess_name}:{seq}", "text": content})
+            msgs.append({"key": f"{ws_name}/{sess_name}:{seq}", "text": redact_secrets(content)})
     return msgs
 
 

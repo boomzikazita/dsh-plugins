@@ -23,7 +23,7 @@ import sys
 HOME = os.path.expanduser("~")
 MEM_ROOT = os.path.join(HOME, ".dsh", "memories")
 WIKI_ROOT = os.path.join(HOME, "Nutstore Files", "我的坚果云", "wiki")
-SCRIPTS_DIRS = [os.path.join(HOME, ".dsh", "scripts"), os.path.join(HOME, ".hermes", "scripts")]
+SCRIPTS_DIRS = [os.path.join(HOME, ".dsh", "scripts")]  # 2026-10-26：~/.hermes/scripts 随 hermes 退役已删
 # v0.2.0：同包相对路径（本文件即 memory 插件 scripts/ 目录内）
 MEM_PLUGIN_SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 RRF_RECALL = os.path.join(MEM_PLUGIN_SCRIPTS, "rrf_recall.py")

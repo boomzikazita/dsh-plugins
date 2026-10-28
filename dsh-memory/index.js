@@ -192,6 +192,41 @@ export function apply(ctx, config = {}) {
     } catch { /* guard 不可用则跳过 */ }
 
     // ---------- 7. 钩子：primer（agent/pre-step 门控召回注入） ----------
+    // delta 注入缓存（2026-10-27，借鉴 dsh-honcho「只付变化成本」）：原实现每个 pre-step
+    // 都同步 spawn python（每轮白付百毫秒级进程冷启），而 delta 内容只随资产增减/编辑变化。
+    // 指纹 = 三目录「文件数:最新 mtime」+ 状态卡 mtime；指纹不变且未超 TTL 直接复用上次输出。
+    // TTL 兜底窗口老化：delta 脚本的 2 天窗口随时间滑动，无文件变化时旧条目也会滑出。
+    const DELTA_DIRS = [join(HOME, '.dsh', 'scripts'), join(HOME, '.dsh', 'skills'), join(HOME, '.dsh', 'plugins')]
+    const DELTA_CARD = join(HOME, 'Nutstore Files', '我的坚果云', 'wiki', 'raw', '技术', '系统运维', '系统状态卡.md')
+    const DELTA_TTL_MS = 10 * 60 * 1000
+    let deltaCache = { fp: '', at: 0, out: '' }
+    const deltaFingerprint = () => {
+      const parts = []
+      for (const d of DELTA_DIRS) {
+        try {
+          let n = 0, max = 0
+          for (const name of readdirSync(d)) {
+            try {
+              const st = statSync(join(d, name))
+              if (!st.isFile()) continue
+              n++; if (st.mtimeMs > max) max = st.mtimeMs
+            } catch { /* 单文件 stat 失败跳过 */ }
+          }
+          parts.push(`${n}:${Math.round(max)}`)
+        } catch { parts.push('x') }
+      }
+      try { parts.push(String(Math.round(statSync(DELTA_CARD).mtimeMs))) } catch { parts.push('x') }
+      return parts.join('|')
+    }
+    const getDelta = () => {
+      const now = Date.now()
+      const fp = deltaFingerprint()
+      if (fp === deltaCache.fp && now - deltaCache.at < DELTA_TTL_MS) return deltaCache.out
+      let out = ''
+      try { const d = py('delta_assets.py', []); if (d.ok) out = d.out } catch { /* 注入失败不阻断 */ }
+      deltaCache = { fp, at: now, out }
+      return out
+    }
     if (ctx.agents) {
       const primerAuditFile = join(HOME, '.dsh', 'memories', 'primer-audit.jsonl')
       const appendPrimerAudit = ({ lane, q, chars }) => {
@@ -211,10 +246,10 @@ export function apply(ctx, config = {}) {
           const lastUser = [...(decision.messages ?? [])].reverse().find((m) => m.role === 'user')
           const text = extractText(lastUser?.content)
           const gated = text && PRIMER_GATE.some((g) => text.includes(g))
-          // delta 资产变更注入（2026-08-20）：最近 7 天变更资产清单，有变更才出声；
+          // delta 资产变更注入（2026-08-20）：最近变更资产清单，有变更才出声；
           // 目的：防"重复建设"（建文件前先感知已有资产），成本随变化量而非存量
-          let deltaOut = ''
-          try { const d = py('delta_assets.py', []); if (d.ok && d.out) deltaOut = d.out } catch { /* 注入失败不阻断 */ }
+          // 2026-10-27：走指纹缓存（见上），不再每个 pre-step 同步 spawn python
+          const deltaOut = getDelta()
           if (!gated && warns.length === 0 && !deltaOut) return decision
           const parts = []
           if (warns.length) parts.push(warns.join('\n'))
@@ -288,6 +323,22 @@ export function apply(ctx, config = {}) {
         } catch { /* 交给 automation 兜底 */ }
       })
     } catch { /* session/event 不可用：memory-harvest automation 兜底 */ }
+
+    // ---------- 9. 卸载兜底 flush（2026-10-27，借鉴 dsh-honcho Teardown 设计） ----------
+    // 缺口：harvest 是「turn/end + 10 分钟节流」，宿主退出瞬间最多丢 10 分钟转录。
+    // dsh 的异步 ctx.effect disposer 在 unload 时会被 await（docs/cordis-api/fiber.md），
+    // 是进程级唯一可靠的终态钩子——在这里补跑一次增量转录（增量场景通常 <1s，60s 上限）。
+    try {
+      ctx.effect(() => async () => {
+        try {
+          execFileSync(PYTHON, [join(scriptsDir, 'harvest.py'), 'index'], {
+            encoding: 'utf8', timeout: 60000, maxBuffer: 16 * 1024 * 1024, env: PY_ENV,
+          })
+        } catch (e) {
+          console.warn(`[dsh-memory] 卸载兜底 harvest 失败（不阻断退出）: ${String(e?.stderr || e?.message || e).slice(0, 200)}`)
+        }
+      })
+    } catch { /* effect 不可用则跳过 */ }
   }
 
   return { memoryDir }

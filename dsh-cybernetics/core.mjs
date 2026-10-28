@@ -16,7 +16,7 @@
  *   C13 健康评分、B4 熵阈值等纯逻辑下沉到此处。
  */
 
-export const VERSION = 'v4.4'
+export const VERSION = 'v4.5'
 
 // 档位 → 阻尼系数 zeta（速度-稳定权衡；保留默认，patch 可覆盖）
 export const DEFAULT_MODES = { fast: 0.3, deep: 0.7, conservative: 1.2 }

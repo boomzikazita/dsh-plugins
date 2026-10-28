@@ -49,7 +49,7 @@ K = 60
 # 实体表（沿用 hermes rrf_fuser.py，中文用 in 操作符；新增人物/领域词按维护规格补充）
 _KNOWN_PERSONS = frozenset({"老郑", "郑鑫燚", "陈丹", "句号", "藏妤", "刘兰", "何启敏", "sophia", "张盈盈"})
 _KNOWN_PROJECTS = frozenset({"HMS", "Shadow-Weave", "RRF", "Hermes", "Mem0", "Letta", "Memory-OS", "DSH", "OpenClaw"})
-_KNOWN_TOPICS = frozenset({"A股", "情感", "控制论", "会议纪要", "Vaultwarden", "Honcho", "零信任", "RDP",
+_KNOWN_TOPICS = frozenset({"A股", "情感", "控制论", "会议纪要", "Honcho", "零信任", "RDP",
                            "ZeroTier", "飞书", "公文", "SiYuan", "Obsidian", "graphify", "skill", "cron"})
 
 _ALL_ENTITIES = sorted(
@@ -381,6 +381,27 @@ def _mcp_sse_text(data: str) -> list:
     return out
 
 
+# 结论置信度 → RRF 分（2026-10-27，借鉴 dsh-honcho 的 representation 过滤思路：
+# 模型只需要高置信主张；contradiction 是 Honcho 自标的存疑项，强降权但保留可见）。
+# 桥的 honcho_search 自 2026-10-27 起行首带 [level] 标签；无标签的旧格式按 1.0 兼容。
+_L3_LEVEL_SCORE = {"explicit": 1.0, "deductive": 0.85, "inductive": 0.65, "contradiction": 0.3}
+_L3_LEVEL_RE = re.compile(r"^-\s*\[(\w+)\]\s*")
+
+
+def _lane3_scored(texts: list) -> list:
+    """桥返回的项目符号块 → 逐条 (score, text)；带 [level] 前缀的按置信度给分。"""
+    out = []
+    for block in texts:
+        lines = [l for l in block.splitlines() if l.strip()]
+        if not any(_L3_LEVEL_RE.match(l) for l in lines):
+            out.append((1.0, block))  # 旧格式整块保底
+            continue
+        for l in lines:
+            m = _L3_LEVEL_RE.match(l)
+            out.append((_L3_LEVEL_SCORE.get(m.group(1).lower(), 0.5), l) if m else (1.0, l))
+    return out
+
+
 def lane3_mcp(query: str) -> list:
     """L3 语义召回：经 MCP 调用 honcho_search；桥不可达则静默降级（L3 为可选层）"""
     try:
@@ -390,7 +411,7 @@ def lane3_mcp(query: str) -> list:
         })
         sid2, out = _mcp_rpc("tools/call", {"name": "honcho_search", "arguments": {"query": query}}, sid)
         texts = _mcp_sse_text(out)
-        return [(1.0, t) for t in texts]
+        return _lane3_scored(texts)
     except Exception as e:
         # 默认静默（L3 可选层）；排查时 DSH_MEMORY_L3_DEBUG=1 显示降级原因
         if os.environ.get("DSH_MEMORY_L3_DEBUG"):
