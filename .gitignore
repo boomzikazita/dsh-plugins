@@ -3,3 +3,4 @@ tarballs/
 _harness/
 _plugin_push/
 *.log
+dsh-context/
