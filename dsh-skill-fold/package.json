@@ -1,6 +1,6 @@
 {
   "name": "@boomzzzzzz/dsh-skill-fold",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "index.js",
   "dsh": {
@@ -12,5 +12,6 @@
     "type": "git",
     "url": "git+https://github.com/boomzikazita/dsh-plugins.git",
     "directory": "dsh-skill-fold"
-  }
+  },
+  "description": "DSH skill 目录折叠：按当前任务折叠非匹配域，描述按 120 字截断（不切句）。无工具，挂 agent/pre-step 钩子。"
 }
