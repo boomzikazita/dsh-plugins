@@ -14,17 +14,36 @@
  *   A1 冗余 hash 改用参数文本（exec.arguments），修复 rc.6 下 exec.args 恒 undefined
  *      导致的同工具全判"同参数重复"假冗余。
  *   C13 健康评分、B4 熵阈值等纯逻辑下沉到此处。
+ *
+ * v4.6（2026-11-01，对照《工程控制论》二次精读 + 17.5 天实测标定）：
+ *   P0-1 误差信号补盲：bash 非零退出码计入 delta（原只看 isError，看不见 60% 调用量的
+ *        主要失败模式；实测 9141 次 bash，真失败 3.74%，回路只见 1.0%）
+ *   P0-2 判据解耦：pHat 改回恒 alphaLow 的慢统计（删 adaptiveAlpha）。实测共线性 100%——
+ *        原 alphaHigh 把 pHat 顶到与 divergence 同一个尖峰上，两支路信息完全重叠
+ *   P0-3 阈值标定：escalateAt 0.6→0.20（实测 p90=0.15/p95=0.19/max≈0.44；0.6 时 17 天 0 次触发，
+ *        0.20 可额外抓到 12% 的「无突发但失败率 8%+」会话）
+ *   P0-3 执行器言之有物：MODE_LIMITS(5/4/3，从未生效) → MODE_VALVE 相对基线的收缩量
+ *   P1-7 采样归一：EMA 增益按 Δt 归一化（实测 dt p50=218ms/p99=134s，跨 600 倍，同一 α 含义不同）
+ *   P1-4 熵告警加门控：仅当同期有冗余/发散/振荡才注入（实测 202 次里 88% 无佐证信号）
  */
 
-export const VERSION = 'v4.5'
+export const VERSION = 'v4.6'
 
-// 档位 → 阻尼系数 zeta（速度-稳定权衡；保留默认，patch 可覆盖）
-export const DEFAULT_MODES = { fast: 0.3, deep: 0.7, conservative: 1.2 }
+// 档位标签（v4.6：原 zeta 阻尼系数三档全程无人消费，纯装饰，已删）
+export const DEFAULT_MODES = { fast: '快速响应', deep: '深度分析', conservative: '保守稳定' }
 
 export const MODE_ORDER = ['fast', 'deep', 'conservative']
 
-// 档位 → 稳定阀阈值（档位越高越收紧；对照第5章 控制装置参数选择）
-export const MODE_LIMITS = { fast: 5, deep: 4, conservative: 3 }
+// 档位 → 稳定阀相对基线的收缩量（v4.6：原 MODE_LIMITS 5/4/3 **从未生效**——
+// patch 的 maxToolCallsPerTurn 直接短路它，档位切换对阈值零影响，但告警文案仍印 5→4→3，
+// 等于对模型说假话。改为相对基线的收缩量，档位才真有执行效果。对照第 5 章 控制装置参数选择）
+export const MODE_VALVE = { fast: 0, deep: 5, conservative: 10 }
+
+/** 稳定阀实际阈值（纯）：基线 − 档位收缩量，下限 5。基线 25 → fast 25 / deep 20 / conservative 15 */
+export function valveFor(mode, base = 25) {
+  const b = Number.isFinite(base) && base > 0 ? base : 25
+  return Math.max(5, b - (MODE_VALVE[mode] ?? 0))
+}
 
 export const DEFAULT_FEEDFORWARD = [
   // v0.2.0（2026-10-14 规则收敛）：irreversible-write 拦截规则移交 dsh-approval-gate，
@@ -43,13 +62,93 @@ export function ema(prev, delta, alpha = 0.2) {
 }
 
 /**
- * 自适应增益（v4.3，对照 15.11 卡尔曼自适应增益的工程简化）：
- * 固定 α 的缺陷——α 小（滤波强）则失败率突变时响应慢，α 大则偶发失败抖动。
- * 解法：连续失败（divergenceStreak ≥ 阈值）时用大 α 快速跟上现实，否则用小 α 强滤波抗抖动。
- * 返回当前应使用的滤波系数 α。
+ * 采样归一化的 EMA 增益（纯，v4.6 P1-7，对照第 7 章 采样系统：采样周期必须固定，
+ * 否则离散控制律失效）。
+ *
+ * v4.3 的 adaptiveAlpha（连续失败时 α 从 0.15 跳到 0.5）已删除，理由有二：
+ *   1) 实测共线性 100%——凡是 adaptive pHat 能触发升档的会话，全都先被「连续失败」
+ *      触发过。大 α 把 pHat 顶到与 divergence 同一个尖峰上，两条判据信息完全重叠。
+ *   2) 它掩盖了真正的问题：dtMs 实测 p50=218ms、p99=134s、max=3.2h，跨 5 个数量级，
+ *      固定 α 在不同采样节奏下代表的时间常数根本不是一回事。
+ *
+ * 改为按 Δt 幂律归一：a = 1-(1-α₀)^(Δt/Δt₀)，钳在 [α₀/5, 0.9]。
+ * Δt₀ 取实测中位采样周期 250ms ⇒ 常规会话行为与旧版持平，只有长耗时调用才被正确加权。
+ * Δt 缺失（首样本/日志回放）退化为 α₀。
  */
-export function adaptiveAlpha(divergenceStreak, { alphaLow = 0.15, alphaHigh = 0.5, divergenceStreak: divReq = 2 } = {}) {
-  return divergenceStreak >= divReq ? alphaHigh : alphaLow
+export function emaAlphaFor(dtMs, { alpha0 = 0.15, dt0 = 250, max = 0.5 } = {}) {
+  if (!Number.isFinite(dtMs) || dtMs <= 0) return alpha0
+  const a = 1 - Math.pow(1 - alpha0, dtMs / dt0)
+  return Math.min(max, Math.max(alpha0 / 5, a))
+}
+
+/** 取工具结果里的纯文本内容（错误码标记、bash 退出码都藏在里面） */
+export function textContentOf(result) {
+  const c = result?.content
+  if (!Array.isArray(c)) return ''
+  return c
+    .map((b) => (b && b.type === 'text' && typeof b.text === 'string' ? b.text : ''))
+    .join('')
+}
+
+// ---------- P0-1 误差信号补盲：bash 非零退出码 ----------
+// bash 的 spawn 错误/abort 才走 isError；命令自身失败（路径不存在、权限不足、python 抛错）
+// 只是一行 `[exit code: N]` 标记，isError 仍为 false（dsh-tool-bash/lib/index.js:167）。
+// 实测 9141 次 bash 调用：工具级失败 1.0%，命令级真失败 3.74%——占 60% 调用量的主力工具，
+// 其主失败模式原控制回路完全看不见。
+export const BASH_TOOLS = new Set(['bash', 'ops_bash'])
+
+// 约定非零：这些命令用「无匹配」表达正常结果，退出码 1 不算失败
+// （grep/diff 是实测里最常见的两类，占非零退出 388 次中的 46 次）
+export const BENIGN_NONZERO_COMMANDS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'diff', 'cmp', 'test', '[', 'find'])
+
+/** 取命令串里最后一个简单命令的首 token（管道/&&/; 之后那段更可能是真正的判定源） */
+export function firstCommandToken(command) {
+  if (typeof command !== 'string' || command === '') return ''
+  const parts = command.split(/\|\||&&|;|\|/)
+  let toks = (parts[parts.length - 1] ?? '').trim().split(/\s+/).filter(Boolean)
+  while (toks.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[0])) toks = toks.slice(1) // 跳过 FOO=bar 前缀
+  return toks[0] ?? ''
+}
+
+/**
+ * 从工具参数文本里取出真正的命令串（纯）。
+ * 运行期 execArgsText(exec) 给的是**参数 JSON**（`{"command":"grep -n x ."}`），
+ * 不是裸命令——直接 tokenize 会把首 token 取成 `{"command":"grep`，
+ * 让「grep 无匹配」的约定非零豁免在真实链路上永远失效（本机 43 次 grep 退出 1 会被误判成失败）。
+ */
+export function commandTextOf(argsText) {
+  if (typeof argsText !== 'string') return ''
+  const t = argsText.trim()
+  if (!t.startsWith('{')) return t
+  try {
+    const o = JSON.parse(t)
+    if (typeof o?.command === 'string') return o.command
+    if (typeof o?.cmd === 'string') return o.cmd
+  } catch { /* 非 JSON 就按原文处理 */ }
+  return t
+}
+
+/**
+ * bash 退出码判失败（纯）。返回 { failed, benign, token, code }。
+ * 判据分两级：非零 → 看首 token 是否属约定非零命令；属则 benign=true（记观测不记失败）。
+ * argsText 接受参数 JSON 或裸命令串两种形态。
+ */
+export function bashExitDelta(exitCode, argsText) {
+  const code = Number.isFinite(exitCode) ? exitCode : 0
+  if (code === 0) return { failed: false, benign: false, token: '', code: 0 }
+  const token = firstCommandToken(commandTextOf(argsText))
+  const benign = code === 1 && BENIGN_NONZERO_COMMANDS.has(token)
+  return { failed: !benign, benign, token, code }
+}
+
+/**
+ * 熵告警门控（纯，v4.6 P1-4）：工具分布熵低本身不是问题——批量读文件、连续跑命令
+ * 都是「专注」，熵天然低。实测 202 次熵告警里只有 12.1% 同期真有发散或振荡，
+ * 88% 是噪声（每条都要注入一段上下文，还打断注意力）。
+ * 改为需要旁证：同期出现冗余调用 / 发散 / 振荡，才认为低熵是「循环/偏执」。
+ */
+export function entropyGatePure({ redundantCalls = 0, divergence = false, oscillation = false } = {}) {
+  return redundantCalls > 0 || divergence === true || oscillation === true
 }
 
 /**
@@ -75,11 +174,16 @@ export function detectOscillationPure(buf, ratio = 0.7) {
  *    修复"连续失败告警了但 pHat 卡在 0.488 推不动档位"的解耦缺陷。
  *  - 升档加对称防抖（escalateStreak ≥ 阈值才升）——修复"突发失败→瞬间升到顶→快速降回"的档位抖动。
  *
+ * v4.6 标定：escalateAt 0.6 → 0.20。实测（309 会话/15096 样本，含 bash 退出码）：
+ *   旧 0.6 在 17 天里 0 次触发——pHat 会话末值 p90=0.016、max=0.111，阈值离分布 5 倍余量；
+ *   0.20 时约 19.4% 会话会升档，其中 12% 属「无连续失败突发、但失败率持续 8%+」的真劣化，
+ *   这是 divergence 抓不到的独立信息。阈值再降到 0.10 则 40% 会话升档，退化为噪声。
+ *
  * 返回 { autoMode, deescalateStreak, escalateStreak, escalated, deescalated }
  */
 export function adjustControlPure({ pHat, autoMode, deescalateStreak = 0, escalateStreak = 0, divergenceStreak = 0, control }) {
   const {
-    escalateAt = 0.6,
+    escalateAt = 0.2,
     deescalateAt = 0.15,
     deescalateStreak: dsReq = 5,
     escalateStreak: esReq = 3,

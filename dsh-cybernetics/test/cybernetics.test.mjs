@@ -1,42 +1,55 @@
 /**
  * dsh-cybernetics core 单元测试（C12，node:test）
- * 运行：node --test test/
- * 覆盖：EMA 滤波、振荡检测、滞环控制律（升/降档 + 防抖）、
- *       A1 冗余 hash 回归、execArgsText 兼容、熵、健康评分、MODE 常量。
+ * 运行：node --test test/*.test.mjs   （Node 22 下 `node --test test/` 会把目录当模块报 MODULE_NOT_FOUND）
+ * 覆盖：EMA 滤波/采样归一、振荡检测、滞环控制律（升/降档 + 防抖）、
+ *       A1 冗余 hash 回归、execArgsText 兼容、熵与熵门控、健康评分、
+ *       稳定阀阈值、bash 退出码判失败、verify-on-stop 精度。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   VERSION,
   MODE_ORDER,
-  MODE_LIMITS,
+  MODE_VALVE,
+  valveFor,
   ema,
-  adaptiveAlpha,
+  emaAlphaFor,
   detectOscillationPure,
   adjustControlPure,
   execArgsText,
   redundantHash,
   stableStringify,
   computeEntropyPure,
+  entropyGatePure,
   healthScorePure,
   classifyToolError,
+  bashExitDelta,
+  firstCommandToken,
+  commandTextOf,
+  textContentOf,
 } from '../core.mjs'
 import { makeControl } from '../control.mjs'
 import { createSessionState } from '../state.mjs'
 
-test('verify-on-stop（v4.5）：写入无回读触发提醒，写入+回读静默，纯回读不提醒', () => {
+test('verify-on-stop（v4.6）：改既有文件无回读提醒；单次新建 not 提醒；回读静默', () => {
   const cfg = { control: { oscillationWindow: 10, oscillationRatio: 0.7 } }
   const { trackWriteVerify, verifyOnStopWarn } = makeControl({ cfg, state: {}, logState: () => {}, logFile: '/dev/null' })
   const s = createSessionState('t-verify-1')
-  trackWriteVerify(s, 'write')
+  trackWriteVerify(s, 'edit')
   trackWriteVerify(s, 'bash') // bash 不计写入也不计回读
-  assert.ok(verifyOnStopWarn(s)?.includes('verify-on-stop'), '写入无回读应提醒')
+  assert.ok(verifyOnStopWarn(s)?.includes('verify-on-stop'), 'edit 无回读应提醒')
   trackWriteVerify(s, 'read')
   assert.equal(verifyOnStopWarn(s), null, '写入后回读应静默')
   const s2 = createSessionState('t-verify-2')
   trackWriteVerify(s2, 'grep')
   assert.equal(verifyOnStopWarn(s2), null, '纯回读不提醒')
   assert.equal(s2.turnWrites.length, 0)
+  // v4.6 P1-8：单次 write（多为新建文件）不提醒；成批写入（≥2）仍提醒
+  const s3 = createSessionState('t-verify-3')
+  trackWriteVerify(s3, 'write')
+  assert.equal(verifyOnStopWarn(s3), null, '单次新建不提醒（实测 49 次触达里 37 次属此类）')
+  trackWriteVerify(s3, 'write')
+  assert.ok(verifyOnStopWarn(s3)?.includes('verify-on-stop'), '成批写入仍提醒')
 })
 
 test('EMA 滤波：连续失败收敛到 1，连续成功收敛到 0', () => {
@@ -90,12 +103,60 @@ test('v4.3 发散直通升档：连续失败不依赖 pHat 立即升档（修复
   assert.equal(top.autoMode, 'conservative')
 })
 
-test('v4.3 自适应增益：连续失败用大 α 快速响应，稳态用小 α 抗抖动', () => {
-  const ctrl = { alphaLow: 0.15, alphaHigh: 0.5, divergenceStreak: 2 }
-  assert.equal(adaptiveAlpha(0, ctrl), 0.15)
-  assert.equal(adaptiveAlpha(1, ctrl), 0.15, '1 次失败仍稳态')
-  assert.equal(adaptiveAlpha(2, ctrl), 0.5, '连续 2 次失败转大增益')
-  assert.equal(adaptiveAlpha(5, ctrl), 0.5)
+test('v4.6 采样归一增益：Δt 越长得重越大，钳在 [α₀/5, 0.5]，缺失退回 α₀', () => {
+  const base = emaAlphaFor(250)
+  assert.ok(Math.abs(base - 0.15) < 1e-9, `Δt=Δt₀ 应等于 α₀=0.15，实际 ${base}`)
+  assert.ok(emaAlphaFor(50) < base, '快采样（Δt 小）应小于 α₀')
+  assert.ok(emaAlphaFor(5000) > base, '慢采样（Δt 大）应大于 α₀')
+  assert.ok(emaAlphaFor(3 * 3600 * 1000) <= 0.5, '单样本不得越过 0.5（不重置估计）')
+  assert.ok(emaAlphaFor(1) >= 0.15 / 5, '下限 α₀/5')
+  assert.equal(emaAlphaFor(0), 0.15, 'Δt 缺失/为 0 退化为 α₀')
+  assert.equal(emaAlphaFor(undefined), 0.15)
+  // 单调性：Δt 越大 α 越大
+  const seq = [50, 250, 1000, 10000].map((d) => emaAlphaFor(d))
+  for (let i = 1; i < seq.length; i++) assert.ok(seq[i] >= seq[i - 1], 'α 应随 Δt 单调不减')
+})
+
+test('v4.6 P0-1 bash 退出码判失败：约定非零豁免，真失败计 1', () => {
+  assert.equal(bashExitDelta(0, 'ls').failed, false)
+  assert.equal(bashExitDelta(2, 'ls /nope').failed, true)
+  assert.equal(bashExitDelta(7, 'sh -c "exit 7"').failed, true)
+  // grep/diff 无匹配：退出 1 属正常结果
+  const g = bashExitDelta(1, 'grep -rn foo .')
+  assert.equal(g.failed, false)
+  assert.equal(g.benign, true)
+  assert.equal(bashExitDelta(1, 'diff a b').benign, true)
+  // 同名但退出码 2 就是真失败（grep 参数错/文件不存在）
+  assert.equal(bashExitDelta(2, 'grep foo').failed, true)
+  // 管道取最后一段作为判定源
+  assert.equal(firstCommandToken('ls | head -3'), 'head')
+  assert.equal(firstCommandToken('A=1 ls -la'), 'ls')
+  assert.equal(firstCommandToken('cd /tmp && npm test'), 'npm')
+  assert.equal(firstCommandToken(''), '')
+  assert.equal(bashExitDelta(1, 'ls | grep x').benign, true, '末段 grep 退出 1 属约定非零')
+  // 运行期真实形态：参数是 JSON，不是裸命令（否则首 token 会取成 `{"command":"grep`，豁免永不生效）
+  const jsonArgs = JSON.stringify({ command: 'grep -rn foo .', description: 'x' })
+  assert.equal(firstCommandToken(jsonArgs), '{"command":"grep', '裸 tokenize 的坑：这正是要修的')
+  assert.equal(bashExitDelta(1, jsonArgs).benign, true, 'JSON 参数形态也要认出 grep')
+  assert.equal(bashExitDelta(1, JSON.stringify({ command: 'rg -n x' })).benign, true)
+  assert.equal(bashExitDelta(2, JSON.stringify({ command: 'ls /nope' })).failed, true)
+  assert.equal(commandTextOf('{"command":"ls -la","description":"d"}'), 'ls -la')
+  assert.equal(commandTextOf('ls -la'), 'ls -la', '裸命令原样返回')
+  assert.equal(commandTextOf('not json {'), 'not json {', '坏 JSON 退回原文')
+})
+
+test('v4.6 P0-1 文本兜底：从 [exit code: N] 标记取退出码', () => {
+  const r = { isError: false, content: [{ type: 'text', text: 'boom\n[exit code: 7]' }] }
+  assert.match(textContentOf(r), /\[exit code: 7\]/)
+  assert.equal(textContentOf({ content: [{ type: 'image' }] }), '')
+  assert.equal(textContentOf(null), '')
+})
+
+test('v4.6 P1-4 熵门控：无旁证的低熵不告警', () => {
+  assert.equal(entropyGatePure({ redundantCalls: 0, divergence: false, oscillation: false }), false, '专注型批量作业不告警')
+  assert.equal(entropyGatePure({ redundantCalls: 1, divergence: false, oscillation: false }), true, '有冗余调用才告警')
+  assert.equal(entropyGatePure({ divergence: true }), true)
+  assert.equal(entropyGatePure({ oscillation: true }), true)
 })
 
 test('滞环：降档需连续 5 次低失败率（防抖），中途反弹清零', () => {
@@ -162,7 +223,14 @@ test('健康评分（C13）：满分 100、全失败 0、发散/振荡扣分', (
 
 test('MODE 常量与版本', () => {
   assert.deepEqual(MODE_ORDER, ['fast', 'deep', 'conservative'])
-  assert.deepEqual(MODE_LIMITS, { fast: 5, deep: 4, conservative: 3 })
+  // v4.6：MODE_LIMITS(5/4/3，从未生效) → MODE_VALVE 收缩量；基线 25 → 25/20/15
+  assert.deepEqual(MODE_VALVE, { fast: 0, deep: 5, conservative: 10 })
+  assert.equal(valveFor('fast', 25), 25)
+  assert.equal(valveFor('deep', 25), 20)
+  assert.equal(valveFor('conservative', 25), 15)
+  assert.equal(valveFor('unknown', 25), 25, '未知档位不收缩')
+  assert.equal(valveFor('conservative', 12), 5, '下限 5')
+  assert.equal(valveFor('fast', undefined), 25, '基线缺失回落到 25')
   assert.ok(VERSION.startsWith('v4.'), `版本号应以 v4. 开头，实际 ${VERSION}`)
 })
 

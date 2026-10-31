@@ -1,6 +1,19 @@
 /**
  * dsh-cybernetics — 控制论内核 v4 运行时（DeepSeek Harness 插件）
  *
+ * v4.6（2026-11-01，对照《工程控制论》二次精读 + 17.5 天实测标定，8 项）：
+ *   P0-1 误差信号补盲：bash 非零退出码计入 delta（实测 9141 次 bash 命令级真失败 3.74%，
+ *        原回路只看见 isError 的 1.0%）——占 60% 调用量的主失败模式此前完全不可见
+ *   P0-2 判据解耦：删 adaptiveAlpha（实测共线性 100%，与 divergence 信息完全重叠），
+ *        pHat 回归恒 alphaLow 慢统计
+ *   P0-3 阈值标定 + 执行器兑现：escalateAt 0.6→0.20；稳定阀改「基线−档位收缩量」
+ *        （原 MODE_LIMITS 被 patch 短路，档位切换对阈值零影响，告警文案却印 5/4/3）
+ *   P1-4 熵告警加旁证门控（实测 62% 会话无任何旁证）
+ *   P1-5 前馈模式锚定命令起始位（849 次命中 0 拦截，还能误中路径里的 npm 字样）
+ *   P1-6 删装饰字段 feedforwardBlocks / blocked（恒零）
+ *   P1-7 EMA 增益按 Δt 归一（实测 dt p50=218ms / p99=134s，跨 5 个数量级）
+ *   P1-8 verify-on-stop 精度：单次 write（多为新建）不提醒，实测占触达的 76%
+ *
  * v4.5（2026-10-28，verify-on-stop 守卫，灵感 [arXiv:2609.00006] Hermes）：
  *   完成声明纪律从 prompt 自觉下沉为机制——本 turn 有 write/edit 写入但无
  *   read/grep/glob 回读 → turn 边界注入提醒 + logState 事件 verify-on-stop。
@@ -75,17 +88,20 @@ import {
   VERSION,
   DEFAULT_MODES,
   MODE_ORDER,
-  MODE_LIMITS,
+  valveFor,
   DEFAULT_FEEDFORWARD,
   ema,
-  adaptiveAlpha,
   detectOscillationPure,
   adjustControlPure,
   execArgsText,
   redundantHash,
   computeEntropyPure,
+  entropyGatePure,
   healthScorePure,
   classifyToolError,
+  BASH_TOOLS,
+  bashExitDelta,
+  textContentOf,
 } from './core.mjs'
 import { normalizeFeedforward, normalizeModes, createSessionState, makeInjectedUserMessage } from './state.mjs'
 import { makeControl } from './control.mjs'
@@ -111,10 +127,10 @@ export function apply(ctx, config = {}) {
     stability: { maxToolCallsPerTurn: config.stability?.maxToolCallsPerTurn ?? 5 },
     modes: normalizeModes(config.modes),
     control: {
-      alpha: config.control?.alpha ?? 0.2,             // EMA 滤波系数（旧；被 alphaLow/alphaHigh 取代，兼容保留）
-      alphaLow: config.control?.alphaLow ?? config.control?.alpha ?? 0.15, // v4.3 稳态小增益（强滤波抗抖动）
-      alphaHigh: config.control?.alphaHigh ?? 0.5,     // v4.3 突变大增益（连续失败时快速跟上现实）
-      escalateAt: config.control?.escalateAt ?? 0.6,   // 升档阈值（失败率高）
+      alpha: config.control?.alpha ?? 0.2,             // EMA 滤波系数（旧；被 alphaLow/dt0Ms 取代，兼容保留）
+      alphaLow: config.control?.alphaLow ?? config.control?.alpha ?? 0.15, // 稳态增益（v4.6 起为唯一增益）
+      dt0Ms: config.control?.dt0Ms ?? 250,             // v4.6 P1-7 采样基准周期（实测 p50≈218ms）
+      escalateAt: config.control?.escalateAt ?? 0.2,   // 升档阈值（v4.6 实测标定：0.6→0.20）
       deescalateAt: config.control?.deescalateAt ?? 0.15, // 降档阈值（失败率低）
       deescalateStreak: config.control?.deescalateStreak ?? 5, // 降档防抖连续次数（滞环）
       escalateStreak: config.control?.escalateStreak ?? 3,     // v4.3 升档防抖连续次数（对称滞环）
@@ -134,7 +150,6 @@ export function apply(ctx, config = {}) {
   const state = {
     totalToolCalls: 0,
     feedforwardHits: 0,
-    feedforwardBlocks: 0,
     observedTools: new Set(),    // 已知工具：插件 ∪ 历史记忆 ∪ 本次观测（P0-2）
     obsPersistedSize: 0,         // 已落盘的观测集大小（变更才写盘）
     bySession: new Map(),        // B7: sid → sessionState
@@ -226,7 +241,15 @@ export function apply(ctx, config = {}) {
     // subagent 会话 sid 为 UUID 格式（如 e28b9019-0487-…），与正常 session 的 session-xxx 前缀区分
     const entropyExempt = /^(dsh-automation|automation|lark)/.test(sid) ||
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sid)
-    if (!entropyExempt && s.recentCalls.length >= 8 && s.entropy < cfg.control.entropyWarnAt && !s.entropyWarned) {
+    // v4.6 P1-4：低熵必须带旁证才算「循环/偏执」——同期窗口内有同参数重复调用，
+    // 或已判定发散/振荡。实测 202 次告警里仅 12.1% 有此类旁证，88% 是「专注型批量作业」被误伤。
+    const windowDup = new Set(s.recentCalls.map((c) => c.hash)).size < s.recentCalls.length
+    const entropyCorroborated = entropyGatePure({
+      redundantCalls: windowDup ? 1 : 0,
+      divergence: s.divergence,
+      oscillation: s.oscillation,
+    })
+    if (!entropyExempt && entropyCorroborated && s.recentCalls.length >= 8 && s.entropy < cfg.control.entropyWarnAt && !s.entropyWarned) {
       s.entropyWarned = true
       logState({ ts: now, event: 'entropy-warn', sid, entropy: s.entropy, window: s.recentCalls.length })
       queueWarn(s, `[控制律] 工具分布熵 ${s.entropy.toFixed(2)} 过低（<${cfg.control.entropyWarnAt}，最近 ${s.recentCalls.length} 次调用工具单一化），疑似陷入循环/偏执，请检查当前策略并多样化工具使用`)
@@ -262,7 +285,6 @@ export function apply(ctx, config = {}) {
     if (hit) {
       state.feedforwardHits += 1
       const isAsk = hit.action.strategy === 'dry-run+confirm' // 不可逆操作：强制批准门
-      if (!isAsk) state.feedforwardBlocks += 1
       if (isAsk) {
         // ask 分支会提前 return（走审批），单独留痕；放行分支则由下方统一的 pre-execute
         // 一条记录带 feedforward 字段，避免同一调用写两条 pre-execute。
@@ -285,11 +307,10 @@ export function apply(ctx, config = {}) {
 
     // 稳定阀（本轮窗口，会话级）：超限降级为警告，交互/观测工具豁免
     const modeNow = currentMode(s)
-    // v0.2.1：配置优先级修正——原 `MODE_LIMITS[modeNow] ?? cfg.stability.maxToolCallsPerTurn`
-    // 中 MODE_LIMITS 覆盖三档全部取值 ⇒ patch 里的 maxToolCallsPerTurn 是**死配置**。
-    // 现改为：patch 显式配置优先，未配时回落到档位表（fast 5 / deep 4 / conservative 3）。
-    // 注：窗口已修正为按 turn 计数，故 patch 侧基线调成 25（见 cordis.patch.yml 注释）。
-    const maxPerTurn = cfg.stability.maxToolCallsPerTurn ?? MODE_LIMITS[modeNow] ?? 5
+    // v4.6 P0-3：阈值 = 基线 − 档位收缩量（基线 25 → fast 25 / deep 20 / conservative 15）。
+    // 原实现 `cfg.stability.maxToolCallsPerTurn ?? MODE_LIMITS[modeNow]`：patch 恒有值 ⇒ 档位
+    // 永远影响不到阈值，升档降档对受控量零作用（档位只剩下"警告重复几次"这点区别）。
+    const maxPerTurn = valveFor(modeNow, cfg.stability.maxToolCallsPerTurn)
     const overLimit = s.toolCallsInTurn > maxPerTurn
     const exempt = toolName === 'ask_user_question' || toolName === 'cybernetics_snap' || toolName === 'cybernetics_status' || toolName === 'cybernetics_check' || toolName === 'cybernetics_sandbox_mode'
     if (overLimit && !exempt) {
@@ -304,7 +325,6 @@ export function apply(ctx, config = {}) {
           turn: s.toolCallsInTurn,
           max: maxPerTurn,
           mode: modeNow,
-          blocked: false,
         })
         queueWarn(s, `[稳定性提示] 工具调用窗口 ${s.toolCallsInTurn}/${maxPerTurn}（模式 ${modeNow}），请收敛：合并操作、减少重复调用。`)
       }
@@ -326,7 +346,6 @@ export function apply(ctx, config = {}) {
       sid,
       tool: toolName,
       y_pred: s.yPred,
-      blocked: false,
       ...(hit ? { feedforward: hit.id, strategy: hit.action.strategy } : {}),
     })
     return next()
@@ -338,7 +357,18 @@ export function apply(ctx, config = {}) {
     const s = getSessionState(sid) // 孤儿 result 也会拉出会话（A2 配对口径）
     const tool = exec?.name || exec?.tool || 'unknown'
     const isError = !!(result && (result.isError === true || result.error != null || result.ok === false))
-    const delta = isError ? 1.0 : 0
+    // v4.6 P0-1 误差信号补盲：bash 的命令失败不进 isError（只有 spawn 错/abort 才进），
+    // 只在输出里留一行 `[exit code: N]`。占 60% 调用量的主力工具，其主失败模式原回路完全看不见。
+    // 实测 9141 次 bash：工具级失败 1.0%，命令级真失败 3.74% ⇒ 原 delta 严重低估。
+    // 退出码优先取结构化字段 value.exitCode，取不到再从文本标记解析（两种形态实测都存在）。
+    let exitInfo = null
+    if (!isError && BASH_TOOLS.has(tool)) {
+      const structured = result?.value?.exitCode
+      const m = Number.isFinite(structured) ? null : /\[exit code: (\d+)\]/.exec(textContentOf(result))
+      const code = Number.isFinite(structured) ? structured : m ? Number(m[1]) : null
+      if (code !== null && code !== 0) exitInfo = bashExitDelta(code, execArgsText(exec))
+    }
+    const delta = isError || exitInfo?.failed ? 1.0 : 0
     s.lastDelta = delta
     s.resultCount += 1
 
@@ -357,7 +387,7 @@ export function apply(ctx, config = {}) {
 
     // A2 观测完整率：钳制 ≤1（孤儿 result 不把分子顶破）
     s.observationRate = s.preExecCount > 0 ? Math.min(1, s.resultCount / s.preExecCount) : 'n/a'
-    adjustControl(s, delta)
+    adjustControl(s, delta, dtMs)
     const entry = {
       ts: Date.now(),
       event: 'result',
@@ -381,6 +411,12 @@ export function apply(ctx, config = {}) {
       }
     }
     if (dtMs != null) entry.dtMs = dtMs
+    // v4.6 P0-1：命令级退出码单列，供周检回滚/复核（benign=约定非零，如 grep 无匹配）
+    if (exitInfo) {
+      entry.exitCode = exitInfo.code
+      if (exitInfo.token) entry.cmd = exitInfo.token
+      if (exitInfo.benign) entry.exitBenign = true
+    }
 
     // ---------- 连续失败 → skill_search 兜底（2026-08-24 能控性补全） ----------
     // 场景：模型遇到「读图/OCR/转换」等任务时用底层工具反复试错、连续失败，
@@ -501,9 +537,8 @@ export function apply(ctx, config = {}) {
     version: VERSION,
     mode: state.autoModeSeed,
     feedforwardRules: cfg.feedforward.length,
-    // v0.2.1：打印**生效值**（patch 基线优先，回落档位表）——原来打印 MODE_LIMITS，
-    // 与稳定阀实际使用值不一致（日志显示 5，实际用 patch 的 25）。
-    maxToolCallsPerTurn: cfg.stability.maxToolCallsPerTurn ?? MODE_LIMITS[state.autoModeSeed],
+    // v4.6 P0-3：打印**生效阈值**（基线 − 档位收缩量），与实际用于比较的值同源
+    maxToolCallsPerTurn: valveFor(state.autoModeSeed, cfg.stability.maxToolCallsPerTurn),
     control: cfg.control,
     recovered: recovered ? state.recovered : null,
   })

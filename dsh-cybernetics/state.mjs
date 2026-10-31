@@ -21,11 +21,13 @@ export function normalizeFeedforward(list) {
   return list.map(normalizeRule)
 }
 
-// modes 兼容：数值 { fast: 0.3 } 或 patch 对象 { fast: { zeta: 0.3, label } }；缺省用默认
+// modes 兼容（v4.6）：只留**标签**。zeta 阻尼系数三档从未被任何代码消费，纯装饰，已删；
+// 档位现在真正影响稳定阀阈值（见 core.valveFor），配置只需给显示标签。
 export function normalizeModes(modes) {
   const out = {}
   for (const [k, v] of Object.entries(modes ?? {})) {
-    out[k] = typeof v === 'object' && v !== null ? (v.zeta ?? 0.5) : v
+    if (typeof v === 'string') out[k] = v
+    else if (v && typeof v === 'object' && typeof v.label === 'string') out[k] = v.label
   }
   return Object.keys(out).length ? out : { ...DEFAULT_MODES }
 }
