@@ -8,8 +8,23 @@
         # 状态文件（per-session hash 表，跨轮持久）
         stateFile: '~/.dsh/prompt-diff/state.json'
         # 只对超过该字符数的块做 diff（小快不折腾）
-        minChars: 500
+        # 2026-10-31：500 → 2000。实测被缩略的 tool:goal / team:policy / dsh-ops:* 都是
+        # 规则说明类块，缩掉后原文不可恢复（指路通道也不存在），宁少勿错。
+        minChars: 2000
         # state.json 清理：只保留最近 N 个 session id
         keepSessions: 50
         # 永不 diff 的块名关键词（核心规则块必须每轮完整可见）
-        skipNames: ['persona', 'harness:identity', 'instructions']
+        # 2026-10-31 扩挡：原只有 persona / harness:identity / instructions，
+        # 实测仍缩掉了 tool:goal(2507)、team:policy(2080)、dsh-ops:repository-tooling:*(2398/2290)、
+        # ui:deliverable-file-references(2470)、app:web-surface(2469) —— 这些是不可重新拉取的规则/说明，
+        # 缩略后模型只能凭记忆遵守。只允许缩「纯 UI/描述类」大块。
+        skipNames:
+          - persona
+          - harness:identity
+          - instructions
+          - 'tool:'
+          - 'team:'
+          - 'ops:'
+          - skill
+          - catalog
+          - runtime

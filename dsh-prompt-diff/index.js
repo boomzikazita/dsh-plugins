@@ -26,7 +26,8 @@
  *   对 assembly.sections/contexts 中超过 minChars 的大块（如技能目录、资产提示）：
  *     - 首轮：全量注入 + 记 sha256（per-session，落盘跨轮）
  *     - 后续同内容：替换为一行缩略「内容未变 hash:xxxx + 去哪要」——
- *       模型需要时用 skill_search / resource ls / check_assets 主动拉取（与 resource 的 ls 互补）
+ *       模型需要时用 skill_search（技能）/ OpenViking find·read（记忆与原文）主动拉取
+ *       （2026-10-31：原写 resource ls / check_assets，两者随 dsh-memory 退役，已失效）
  *     - 内容变化：全量注入 + 更新 hash
  *
  * 安全设计：
@@ -119,7 +120,7 @@ export function apply(ctx, config = {}) {
         const stamp = new Date(prev.ts).toISOString().slice(0, 16).replace('T', ' ')
         return {
           ...entry,
-          text: `[prompt-diff] 「${entry.name}」内容未变（hash ${h.slice(0, 8)}，上次变更 ${stamp}，共 ${entry.text.length} 字符）。需要时主动拉取：技能目录用 skill_search，记忆资产用 resource，变更记录用 check_assets。`,
+          text: `[prompt-diff] 「${entry.name}」内容未变（hash ${h.slice(0, 8)}，上次变更 ${stamp}，共 ${entry.text.length} 字符）。需要时主动拉取：技能目录用 skill_search；记忆与原文用 OpenViking 的 find / read（viking:// 路径）；wiki 运维用 wiki-ops 技能。`,
         }
       }
       blocks[entry.name] = { h, ts: Date.now() }
