@@ -305,14 +305,18 @@ export function baselineRateOf(tool, table = TOOL_BASELINE) {
 
 /**
  * 窗口级健康分（纯）。window: [{ tool, failed }]，返回 { score, n, fails, observed, expected, ratio }。
- * 样本为空时 score=null——「没有观测」不等于「健康」，不默认满分。
+ * 样本不足 minSamples（默认 30）返回 score=null——小样本会给出极端比值（实测重启后 n=1、1 次失败
+ * 就算出「100% vs 基线 3.7% ⇒ 0 分」），那是噪声不是结论。
+ * 「没有观测」同样返回 null，不默认满分。
  */
-export function healthWindowPure({ window = [], redundantRate = 0, unpairedRate = 0, divergence = false, oscillation = false } = {}) {
+export function healthWindowPure({ window = [], redundantRate = 0, unpairedRate = 0, divergence = false, oscillation = false, minSamples = 30 } = {}) {
   const n = window.length
-  if (!n) return { score: null, n: 0, fails: 0, observed: 0, expected: 0, ratio: 0 }
   const fails = window.reduce((a, w) => a + (w && w.failed ? 1 : 0), 0)
+  const expected = n ? window.reduce((a, w) => a + baselineRateOf(w && w.tool), 0) / n : 0
+  if (n < Math.max(1, minSamples)) {
+    return { score: null, n, fails, observed: n ? fails / n : 0, expected, ratio: 0, insufficient: true }
+  }
   const observed = fails / n
-  const expected = window.reduce((a, w) => a + baselineRateOf(w && w.tool), 0) / n
   const ratio = expected > 0 ? observed / expected : 0
   let score = ratio <= 1 ? 100 - 20 * ratio : Math.max(0, 80 - 40 * (ratio - 1))
   score -= Math.min(1, Math.max(0, Number.isFinite(unpairedRate) ? unpairedRate : 0)) * 10

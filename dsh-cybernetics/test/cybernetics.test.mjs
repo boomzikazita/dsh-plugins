@@ -217,6 +217,15 @@ test('v4.7 窗口级健康分：无观测不给满分、按工具基线归一、
   // 空窗口 → null（"没观测" ≠ "健康"）；旧公式在这里返回 100
   assert.equal(healthWindowPure({}).score, null)
   assert.equal(healthWindowPure({ window: [] }).score, null)
+  // 冷启动保护：样本 <30 不评分（实测重启后 n=1、1 次失败会算出比值 27 ⇒ 0 分，纯噪声）
+  const tiny = healthWindowPure({ window: [{ tool: 'bash', failed: true }] })
+  assert.equal(tiny.score, null)
+  assert.equal(tiny.insufficient, true)
+  assert.equal(tiny.n, 1)
+  const at29 = healthWindowPure({ window: Array.from({ length: 29 }, () => ({ tool: 'bash', failed: true })) })
+  assert.equal(at29.score, null, '29 次仍不足')
+  const at30 = healthWindowPure({ window: Array.from({ length: 30 }, () => ({ tool: 'bash', failed: true })) })
+  assert.equal(typeof at30.score, 'number', '30 次开始评分')
   // 全成功 → 100；与基线持平 → 80
   const allOk = healthWindowPure({ window: Array.from({ length: 300 }, () => ({ tool: 'bash', failed: false })) })
   assert.equal(allOk.score, 100)
