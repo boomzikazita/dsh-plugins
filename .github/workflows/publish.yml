@@ -6,7 +6,7 @@ on:
         description: 要发布的包（all = 全部）
         required: true
         type: choice
-        options: [all, dsh-context, dsh-cybernetics, dsh-memory, dsh-model-fallback, dsh-prompt-diff, dsh-skill-authoring, dsh-skill-fold, dsh-skill-search]
+        options: [all, dsh-context, dsh-cybernetics, dsh-model-fallback, dsh-prompt-diff, dsh-skill-authoring, dsh-skill-fold, dsh-skill-search]
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -27,7 +27,7 @@ jobs:
         run: |
           set -e
           pkgs="$PKG"
-          [ "$PKG" = "all" ] && pkgs="dsh-context dsh-cybernetics dsh-memory dsh-model-fallback dsh-prompt-diff dsh-skill-authoring dsh-skill-fold dsh-skill-search"
+          [ "$PKG" = "all" ] && pkgs="dsh-context dsh-cybernetics dsh-model-fallback dsh-prompt-diff dsh-skill-authoring dsh-skill-fold dsh-skill-search"
           for d in $pkgs; do
             echo "=== $d ==="
             cd "$d"
