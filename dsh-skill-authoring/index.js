@@ -149,7 +149,7 @@ let DOMAIN_MAP = {
   'policy-analysis-expert': 'thinking',
   'stepwise-execution': 'thinking',
   'linux-service-longevity': 'ops',
-  'vaultwarden-selfhosted': 'ops',
+  
   'computer-use': 'ops',
   'architecture-diagram': 'design',
   'multimodal-image-analysis': 'design',
@@ -207,7 +207,7 @@ let DOMAINS = [
   { id: 'writing', label: '写作与内容', keywords: ['写作', '润色', '简历', '引用', '出版', 'humanize', 'citations'] },
   { id: 'memory-kb', label: '记忆与知识管理', keywords: ['记忆', '召回', 'wiki', '笔记', 'Obsidian', '思源', 'memory', '知识库'] },
   { id: 'thinking', label: '思维框架', keywords: ['思维', '框架', '分析', '矛盾', '麦肯锡', '结构化', 'perspective'] },
-  { id: 'ops', label: '系统运维', keywords: ['运维', '部署', 'Docker', '服务', 'vaultwarden', '长寿', 'service'] },
+  { id: 'ops', label: '系统运维', keywords: ['运维', '部署', 'Docker', '服务', '长寿', 'service'] },
   { id: 'design', label: '视觉与设计', keywords: ['架构图', 'SVG', '图片', '图像', '设计', '截图', 'vision', '读图', '看图', '识别', 'OCR', '照片'] },
   { id: 'dsh-platform', label: 'DSH 平台', keywords: ['dsh', '会话恢复', '中断', 'resume', 'harness'] },
   { id: 'research', label: '分析与研究', keywords: ['研究', '评估', '财报', '反例', '调研', 'research', 'audit'] },

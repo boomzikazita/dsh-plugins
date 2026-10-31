@@ -16,6 +16,13 @@
   7. references      references/index.md 存在（长内容分拆）
   8. verification   不确定处标注来源/证据等级
   9. style           操作手册风格（短句指令，非文档转储）
+
+增补 3 项非阻断提示（2026-10-28，源自 affaan-m/ECC 311 skill 抽样对照；ok 恒 True，
+只提示不判失败，存量 skill 不做追溯改造）:
+  10. desc 双段式      description 尾部带 "Use when …" 触发子句
+  11. Anti-Patterns   反例/反模式成节
+  12. Related 引用网   skill↔skill↔script 交叉引用
+（ECC 原列 "When NOT to Use" 与硬门禁 4 同义，不重复建设）
 """
 import sys
 import os
@@ -107,6 +114,22 @@ def audit_skill(path: str) -> dict:
     style_ok = avg_line < 90 and has_imperative
     checks.append(_c("操作手册风格", style_ok,
         f"平均行宽 {avg_line:.0f} 字符+指令式" if style_ok else "偏文档转储（长句多/缺指令式）"))
+
+    # 10-12. ECC 增补三项（2026-10-28，源自 affaan-m/ECC 311 skill 抽样对照）
+    #        非阻断：ok 恒 True，只提示——存量 84 个 skill 不做追溯改造。
+    #        注：ECC 原列四项，其中 "When NOT to Use" 与硬门禁 4（Boundaries ≥3）同义，不重复建设。
+    dual = bool(re.search(r"Use when|use when|当.{0,20}时(使用|触发|调用)|用于.{0,20}(场景|时)", str(desc)))
+    checks.append(_c("desc 双段式", True,
+        "description 含 what+when 双段（触发条件写在描述尾部）" if dual else
+        "⚠️ description 只有 what：建议补 'Use when …' 触发子句——目录全量注入，触发词在此才能被选中"))
+    anti = _section(body, "Anti-Pattern", "反模式", "反例")
+    checks.append(_c("Anti-Patterns", True,
+        "有反例/反模式段" if anti else
+        "⚠️ 缺 Anti-Patterns 段：写清错误用法比罗列正确用法更能约束行为"))
+    related = bool(re.search(r"^#{1,4}\s*(Related|See Also|相关|参见)", body, re.M))
+    checks.append(_c("Related 引用网", True,
+        "有 Related/参见 交叉引用" if related else
+        "⚠️ 缺 Related 交叉引用：skill↔skill↔script 互指成图谱，agent 才知道邻接有什么"))
 
     passed = sum(1 for c in checks if c["ok"])
     return {"ok": passed == len(checks), "path": rel, "passed": passed, "total": len(checks), "checks": checks}
@@ -212,6 +235,11 @@ whenToUse:
 - <什么情况不适用>
 - <缺少什么输入不可用>
 
+## Anti-Patterns
+
+- <错误用法 1：为什么会踩坑>
+- <错误用法 2>
+
 ## Quick Reference
 
 - <模式 1：一句话+可复制内容>
@@ -254,6 +282,10 @@ whenToUse:
 
 **Expected output/acceptance**：
 - <验收标准>
+
+## Related
+
+- <相关 skill / 脚本 / 配置>：一句话说明什么时候转向它
 
 ## References
 
