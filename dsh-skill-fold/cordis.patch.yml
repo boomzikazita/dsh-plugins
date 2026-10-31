@@ -3,7 +3,7 @@
     - id: skill-fold
       name: 'dsh-skill-fold'
       config:
-        catalogDescriptionMaxLength: 40
+        catalogDescriptionMaxLength: 120
         foldEnabled: true
         foldKeepDomains: 2
         foldKeepFrequent: 8

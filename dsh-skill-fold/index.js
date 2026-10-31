@@ -188,8 +188,10 @@ function domainOf(name, description) {
 function shorten(desc, max = 40) {
   const normalized = String(desc || '').replace(/\s+/g, ' ').trim()
   if (!normalized) return ''
-  const firstSentence = normalized.split(/[。！？!?.]/)[0] || normalized
-  return firstSentence.length <= max ? firstSentence : `${firstSentence.slice(0, max - 1)}…`
+  // 2026-10-31：去掉「按句末标点切第一句」——实测 63/84 技能的触发条件在第二句（中英混排居多），
+  // 切句后整段中文触发词丢失（obsidian 只剩英文 58 字）。改为只按长度截断，与 dsh 核心
+  // dsh-tool-skill/catalogDescription 行为对齐。
+  return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}…`
 }
 
 function escapeText(value) {
