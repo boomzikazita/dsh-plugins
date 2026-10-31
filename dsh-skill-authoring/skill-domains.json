@@ -58,7 +58,7 @@
     "policy-analysis-expert": "thinking",
     "stepwise-execution": "thinking",
     "linux-service-longevity": "ops",
-    "vaultwarden-selfhosted": "ops",
+    
     "computer-use": "ops",
     "architecture-diagram": "design",
     "multimodal-image-analysis": "design",
@@ -228,7 +228,7 @@
         "部署",
         "Docker",
         "服务",
-        "vaultwarden",
+        
         "长寿",
         "service"
       ]

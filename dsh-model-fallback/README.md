@@ -19,6 +19,7 @@
 | 已产出任何内容块（text/reasoning/tool-call） | 不切换（`onlyBeforeContent: false` 可关），防两个模型的半截输出拼成一条消息 |
 | 失败码命中 `skipCodes`（默认 `CONTENT_FILTER`） | 不切换（内容审查拒绝换模型大概率同样拒绝） |
 | 插件自发起的 fallback 请求 | WeakSet 标记，瀑布重入直接放行，不会递归拦截自己 |
+| 备用目标与当前路由同一 `provider/model` | 跳过（v0.4.1）。通配链 `from.provider: '*'` 下 to 列表里常含主模型自身，不跳过就会把请求再发给刚失败的模型，429 场景白等一整轮重试 |
 
 跨 provider 切换时**默认丢弃 `reasoningEffort`**（各家 effort 语义不通用，显式 effort 不被目标模型支持会在派发前被拒绝）；备用目标可显式覆盖 `reasoningEffort / temperature / maxTokens / stop`。
 

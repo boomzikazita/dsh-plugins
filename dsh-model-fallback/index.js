@@ -35,7 +35,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-model-fallback'
 export const inject = ['llm', 'tools']
 
-export const VERSION = '0.4.0'
+export const VERSION = '0.4.1'
 
 /**
  * 设置页表单 schema。静态 JSON Schema 路径无法枚举运行时注册的 provider/模型
@@ -318,14 +318,35 @@ export function apply(ctx, config = {}) {
    * usage chunk 先缓冲不透传：失败切换时丢弃旧 usage，保证消费端只看到最终
    * 生效那条流的计费信息。
    */
+  // 同一 (provider, model) 只提示一次，避免每轮调用都刷一行。
+  const sameRouteWarned = new Set()
+  function usableTargets(options, targets) {
+    return targets.filter((t) => {
+      if (t.provider !== options.provider || t.model !== options.model) return true
+      const key = `${t.provider}/${t.model}`
+      if (!sameRouteWarned.has(key)) {
+        sameRouteWarned.add(key)
+        console.warn(
+          `[dsh-model-fallback] 备用目标 ${key} 与当前路由相同，已跳过`
+          + '（通配链 from.provider=\'*\' 下会重复命中刚失败的主模型）',
+        )
+      }
+      return false
+    })
+  }
+
   async function* run(options, makeStream, targets) {
+    // 先剔掉与本次请求同一 provider/model 的备用目标：否则「kimi 限额 → 按链又切回
+    // kimi」会白跑一次调用（429 场景下还要再等满一轮宿主重试才落到下一个目标）。
+    // 全部目标都被剔除时下面 targets.length>0 判定为假，原样透传失败终态，不吞错。
+    const usable = usableTargets(options, targets)
     let hasContent = false
     let heldUsage = null
     let failure = null
     for await (const chunk of makeStream()) {
       if (chunk.type === 'usage') { heldUsage = chunk; continue }
       if (chunk.type === 'finish') {
-        if (chunk.reason.kind === 'error' && targets.length > 0
+        if (chunk.reason.kind === 'error' && usable.length > 0
           && eligible(chunk.reason.failure, hasContent)) {
           failure = chunk.reason.failure
           break
@@ -342,7 +363,7 @@ export function apply(ctx, config = {}) {
       if (heldUsage !== null) yield heldUsage
       return
     }
-    const [target, ...rest] = targets
+    const [target, ...rest] = usable
     const code = failure?.code ?? 'UNKNOWN'
     console.warn(
       `[dsh-model-fallback] ${options.provider}/${options.model} 失败（${code}`

@@ -1,6 +1,6 @@
 {
   "name": "@boomzzzzzz/dsh-model-fallback",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "main": "index.js",
   "description": "主模型调用失败时自动切换到备用 provider/model（挂 llm/stream 瀑布，error 终态且未产出内容时按链切换）。设置页面板可视化管理链（模型目录下拉联动）。",

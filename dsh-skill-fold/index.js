@@ -80,7 +80,7 @@ let DOMAIN_MAP = {
   'policy-analysis-expert': 'thinking',
   'stepwise-execution': 'thinking',
   'linux-service-longevity': 'ops',
-  'vaultwarden-selfhosted': 'ops',
+  
   'computer-use': 'ops',
   'architecture-diagram': 'design',
   'multimodal-image-analysis': 'design',
@@ -138,7 +138,7 @@ let DOMAINS = [
   { id: 'writing', label: '写作与内容', keywords: ['写作', '润色', '简历', '引用', '出版', 'humanize', 'citations'] },
   { id: 'memory-kb', label: '记忆与知识管理', keywords: ['记忆', '召回', 'wiki', '笔记', 'Obsidian', '思源', 'memory', '知识库'] },
   { id: 'thinking', label: '思维框架', keywords: ['思维', '框架', '分析', '矛盾', '麦肯锡', '结构化', 'perspective'] },
-  { id: 'ops', label: '系统运维', keywords: ['运维', '部署', 'Docker', '服务', 'vaultwarden', '长寿', 'service'] },
+  { id: 'ops', label: '系统运维', keywords: ['运维', '部署', 'Docker', '服务', '长寿', 'service'] },
   { id: 'design', label: '视觉与设计', keywords: ['架构图', 'SVG', '图片', '图像', '设计', '截图', 'vision', '读图', '看图', '识别', 'OCR', '照片'] },
   { id: 'dsh-platform', label: 'DSH 平台', keywords: ['dsh', '会话恢复', '中断', 'resume', 'harness'] },
   { id: 'research', label: '分析与研究', keywords: ['研究', '评估', '财报', '反例', '调研', 'research', 'audit'] },
@@ -315,7 +315,7 @@ export function apply(ctx, config = {}) {
   const cfg = {
     catalogDescriptionMaxLength: config.catalogDescriptionMaxLength ?? 40,
     sortByUsage: config.sortByUsage ?? true,
-    matchThreshold: config.matchThreshold ?? 3,
+    matchThreshold: config.matchThreshold ?? 12,
     foldEnabled: config.foldEnabled ?? true,
     foldKeepDomains: config.foldKeepDomains ?? 1,
     foldKeepFrequent: config.foldKeepFrequent ?? 5,
@@ -375,10 +375,10 @@ export function apply(ctx, config = {}) {
       const m = messages[i]
       if (m?.role !== 'user') continue
       const src = m?.source
-      // 2026-10-25 二修：黑名单改白名单——真实用户消息 source 无 kind（会话日志取证），
-      // 凡带 source.kind 的一律跳过（plugin:* / skill-catalog / agent-instructions / 未来新注入类型全覆盖）。
-      // 前一版黑名单漏 'agent-instructions'（AGENTS 更新提醒为 user 角色长文，一改 AGENTS 即污染 query）。
-      if (src?.kind) continue
+      // 2026-10-25 二修：黑名单改白名单，挡注入（plugin:* / skill-catalog / agent-instructions / runtime-context 等）。
+      // 2026-10-26 三修：真实用户消息 kind==='user'（Web 与钉钉/IM 通道均带，会话日志二次取证），
+      // 上一版 `if (src?.kind) continue` 把真实输入也杀了，fold 全域失聪。放行 kind 缺失或 'user'。
+      if (src?.kind && src.kind !== 'user') continue
       const content = m.content
       const text = typeof content === 'string'
         ? content
@@ -386,21 +386,6 @@ export function apply(ctx, config = {}) {
       if (text && text.trim()) return text.slice(0, 300)
     }
     return ''
-  }
-
-  function buildMatchHint(query, all, usage) {
-    if (!query) return null
-    const scored = all
-      .map((s) => ({ s, score: scoreSkill(query, s) }))
-      .filter((x) => x.score >= cfg.matchThreshold)
-      .sort((a, b) => b.score - a.score)
-    if (scored.length === 0) return null
-    const lines = ['[技能匹配提示] 当前任务可能与以下 skill 相关，按需用 skill 工具加载（不相关可忽略）：']
-    for (const { s, score } of scored.slice(0, 3)) {
-      const cnt = usage[s.name] || 0
-      lines.push(`- \`${s.name}\`（相关度 ${score}${cnt ? `，已用 ${cnt} 次` : ''}）：${shorten(s.description, 50)}`)
-    }
-    return lines.join('\n')
   }
 
   ctx.on('agent/pre-step', async (payload, next) => {
@@ -419,29 +404,9 @@ export function apply(ctx, config = {}) {
         updated = { ...updated, messages: messages.map((m, i) => (i === idx ? { ...m, content: [{ type: 'text', text }] } : m)) }
       }
     }
-    // (b) 技能匹配提示（2026-08-19 L1：把「模型自觉匹配」变成「系统提示匹配」；
-    //     同一条用户消息只提示一次——state.lastHintSig 去重，避免工具轮重复刷屏）
-    try {
-      const query = extractLatestUserText(updated.messages || messages)
-      if (query) {
-        const all = await listAllSkills(ctx)
-        if (all.length > 0) {
-          const hint = buildMatchHint(query, all, loadUsage())
-          if (hint) {
-            const sig = query.slice(0, 40)
-            if (state.lastHintSig !== sig) {
-              state.lastHintSig = sig
-              const { createUserMessage } = await import('@deepseek-ai/dsh-llm')
-              const hintMsg = createUserMessage({
-                content: [{ type: 'text', text: hint }],
-                source: { kind: 'plugin:dsh-skill-fold' },
-              })
-              return { ...updated, messages: [...(updated.messages || messages), hintMsg] }
-            }
-          }
-        }
-      }
-    } catch { /* 匹配提示失败不阻塞回合 */ }
+    // (b) 技能匹配提示 —— 2026-10-31 停用：实测 31 次提示 / 0 次采纳 / 噪音率 100%
+    //     证据见 ~/.dsh/logs/skill-fold-report-20261030.md
+    //     折叠（(a) 段 renderCompactCatalog）保留，此段只去掉噪音源
     return updated
   }, { prepend: true })
 }
