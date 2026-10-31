@@ -97,7 +97,6 @@ import {
   redundantHash,
   computeEntropyPure,
   entropyGatePure,
-  healthScorePure,
   classifyToolError,
   BASH_TOOLS,
   bashExitDelta,
@@ -142,6 +141,7 @@ export function apply(ctx, config = {}) {
       manualModeMs: config.control?.manualModeMs ?? 60000,        // snap 手动模式持续
       entropyWarnAt: config.control?.entropyWarnAt ?? 1.0,        // B4 低熵告警阈值
       entropyRecoverAt: config.control?.entropyRecoverAt ?? 1.5,  // B4 熵恢复阈值（滞环）
+      healthWindow: config.control?.healthWindow ?? 300,          // v4.7 健康分窗口（跨会话，样本数）
     },
   }
   const logFile = resolve(cfg.stateLog)
@@ -150,6 +150,11 @@ export function apply(ctx, config = {}) {
   const state = {
     totalToolCalls: 0,
     feedforwardHits: 0,
+    // v4.7 健康分窗口：跨会话滚动记录最近 N 次调用的成败，供 healthWindowPure 计算。
+    // 会话级评分必饱和（实测失败率中位数 0），窗口级才有分布；preTotal/resTotal 用于算真观测缺口。
+    window: [],
+    preTotal: 0,
+    resTotal: 0,
     observedTools: new Set(),    // 已知工具：插件 ∪ 历史记忆 ∪ 本次观测（P0-2）
     obsPersistedSize: 0,         // 已落盘的观测集大小（变更才写盘）
     bySession: new Map(),        // B7: sid → sessionState
@@ -212,6 +217,7 @@ export function apply(ctx, config = {}) {
     const sid = sidOf(exec)
     const s = sessionOf(exec)
     state.totalToolCalls += 1
+    state.preTotal += 1 // v4.7 观测缺口分母
     s.toolCallsInTurn += 1
     s.totalSessionCalls += 1
     state.observedTools.add(toolName) // P0-2：被动观测宿主工具
@@ -371,6 +377,10 @@ export function apply(ctx, config = {}) {
     const delta = isError || exitInfo?.failed ? 1.0 : 0
     s.lastDelta = delta
     s.resultCount += 1
+    // v4.7 健康分窗口：跨会话滚动样本（会话级评分必饱和，见 core.healthWindowPure）
+    state.resTotal += 1
+    state.window.push({ tool, failed: delta === 1 })
+    if (state.window.length > cfg.control.healthWindow) state.window.shift()
 
     // B5 工具耗时（v4.3 异步配对：优先用 exec.__cyber 起点，fallback lastStartTs）
     const meta = exec?.__cyber

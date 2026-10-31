@@ -7,6 +7,12 @@ import { valveFor } from './core.mjs'
 export function registerCyberneticsTools(ctx, d) {
   const { cfg, state, logState, sessionOf, sidOf, logFile, replayPHat, slowestTools, healthOf } = d
 
+  // v4.7：健康分改成窗口级对象，统一在这里格式化（样本不足时明确说"无观测"，不给满分）
+  const fmtHealth = (h) => {
+    if (!h || h.score === null) return 'n/a（窗口内无观测）'
+    return `${h.score}/100（窗口 ${h.n} 次，失败 ${h.fails}，观测 ${(h.observed * 100).toFixed(1)}% vs 基线 ${(h.expected * 100).toFixed(1)}%，比值 ${h.ratio.toFixed(2)}）`
+  }
+
   // ---------- 4. 工具：cybernetics_snap（状态快照 + 手动模式，B7 会话级） ----------
   ctx.tools.register(defineTool({
     name: 'cybernetics_snap',
@@ -46,6 +52,7 @@ export function registerCyberneticsTools(ctx, d) {
           redundantCalls: s.redundantCalls,
           entropy: s.entropy,
           observationRate: s.observationRate,
+          // v4.7：窗口级健康分（对象：score/n/fails/observed/expected/ratio），不是单一数值
           healthScore: healthOf(s),
           slowest,
           knownTools: state.observedTools.size,
@@ -63,7 +70,7 @@ export function registerCyberneticsTools(ctx, d) {
       const lines = [
         '[cybernetics] 快照已写入',
         `session=${sid}  mode=${s.mode}（${s.modeSource}${s.modeSource === 'manual' ? `，${Math.max(0, Math.round((s.manualModeUntil - Date.now()) / 1000))}s 后恢复自适应` : ''}）`,
-        `healthScore=${healthOf(s)}`,
+        `healthScore=${fmtHealth(healthOf(s))}`,
         `toolCallsInTurn=${s.toolCallsInTurn}  totalToolCalls=${state.totalToolCalls}`,
         `lastDelta=${s.lastDelta}  pHat=${s.pHat.toFixed(3)}`,
         `feedforwardHits=${state.feedforwardHits}`,
@@ -122,7 +129,7 @@ export function registerCyberneticsTools(ctx, d) {
 
       const out = [
         `[cybernetics] 状态摘要（最近 ${entries.length} 条）`,
-        `session=${sid}  healthScore=${health}/100`,
+        `session=${sid}  healthScore=${fmtHealth(health)}`,
         `工具调用（累计）: ${state.totalToolCalls}`,
         `日志内工具调用: ${results.length}`,
         `delta 均值（0=成功，1=失败）: ${meanDelta}`,

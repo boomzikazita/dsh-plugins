@@ -1,7 +1,7 @@
 // dsh-cybernetics 控制律与状态回放（2026-10-25 从 index.js 下沉，verbatim）
 // 工厂注入 apply 作用域依赖；返回全部控制器供钩子与工具共用
 import { readFileSync, existsSync } from 'node:fs'
-import { valveFor, ema, emaAlphaFor, detectOscillationPure, adjustControlPure, execArgsText, healthScorePure } from './core.mjs'
+import { valveFor, ema, emaAlphaFor, detectOscillationPure, adjustControlPure, execArgsText, healthWindowPure } from './core.mjs'
 
 export function makeControl({ cfg, state, logState, logFile }) {
   // 稳定阀基线与采样基准周期（v4.6）：档位执行效果与 EMA 增益都从这里取
@@ -168,14 +168,20 @@ export function makeControl({ cfg, state, logState, logFile }) {
       .slice(0, top)
   }
 
-  // ---------- C13 健康评分（会话级） ----------
+  // ---------- 健康评分（v4.7：窗口级 + 按工具基线归一，替代 C13 会话级公式） ----------
+  // 会话级分数必饱和（实测 309 会话失败率中位数 0 ⇒ 长期钉在 100），改在跨会话窗口上算。
+  // state.window / state.preTotal / state.resTotal 由 index.js 的钩子维护。
   function healthOf(s) {
-    return healthScorePure({
-      pHat: s.pHat,
-      observationRate: typeof s.observationRate === 'number' ? s.observationRate : 1,
-      redundantRate: s.preExecCount > 0 ? s.redundantCalls / s.preExecCount : 0,
-      divergence: s.divergence,
-      oscillation: s.oscillation,
+    const win = Array.isArray(state.window) ? state.window : []
+    const pre = Number(state.preTotal) || 0
+    const res = Number(state.resTotal) || 0
+    return healthWindowPure({
+      window: win,
+      // 观测缺口：真的 pre-execute 没有配对 result（不是"每次调用都必有一条 result"那种恒等式）
+      unpairedRate: pre > 0 ? Math.max(0, (pre - res) / pre) : 0,
+      redundantRate: s && s.preExecCount > 0 ? s.redundantCalls / s.preExecCount : 0,
+      divergence: !!s?.divergence,
+      oscillation: !!s?.oscillation,
     })
   }
 

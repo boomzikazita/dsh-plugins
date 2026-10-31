@@ -21,7 +21,10 @@ import {
   stableStringify,
   computeEntropyPure,
   entropyGatePure,
-  healthScorePure,
+  healthWindowPure,
+  baselineRateOf,
+  DEFAULT_BASELINE_RATE,
+  BASELINE_MIN_SAMPLES,
   classifyToolError,
   bashExitDelta,
   firstCommandToken,
@@ -210,15 +213,42 @@ test('熵：单一工具 = 0，均匀分布 = log2(n)，混合介于其间', () 
   assert.equal(computeEntropyPure([]), 0)
 })
 
-test('健康评分（C13）：满分 100、全失败 0、发散/振荡扣分', () => {
-  assert.equal(healthScorePure({ pHat: 0, observationRate: 1, redundantRate: 0, divergence: false, oscillation: false }), 100)
-  assert.equal(healthScorePure({ pHat: 1, observationRate: 1, redundantRate: 0, divergence: false, oscillation: false }), 0)
-  const penalized = healthScorePure({ pHat: 0, observationRate: 1, redundantRate: 0, divergence: true, oscillation: true })
-  assert.equal(penalized, 80, '发散+振荡各扣 10')
-  const mid = healthScorePure({ pHat: 0.5, observationRate: 0.5, redundantRate: 0.5, divergence: false, oscillation: false })
-  assert.ok(mid > 0 && mid < 100, `中间态应在 (0,100)，实际 ${mid}`)
-  // 输入越界钳制：负 pHat（钳 0 = 全成功）→ 100；超限观测/冗余钳到边界不溢出
-  assert.equal(healthScorePure({ pHat: -1, observationRate: 5, redundantRate: -2, divergence: false, oscillation: false }), 100)
+test('v4.7 窗口级健康分：无观测不给满分、按工具基线归一、比值单调', () => {
+  // 空窗口 → null（"没观测" ≠ "健康"）；旧公式在这里返回 100
+  assert.equal(healthWindowPure({}).score, null)
+  assert.equal(healthWindowPure({ window: [] }).score, null)
+  // 全成功 → 100；与基线持平 → 80
+  const allOk = healthWindowPure({ window: Array.from({ length: 300 }, () => ({ tool: 'bash', failed: false })) })
+  assert.equal(allOk.score, 100)
+  assert.equal(allOk.ratio, 0)
+  // 基线 3.7%：300 次里 11 次失败 ≈ 持平 → 80 分（旧公式会因 pHat=0.037 给出约 96 分）
+  const atBase = healthWindowPure({ window: Array.from({ length: 300 }, (_v, i) => ({ tool: 'bash', failed: i < 11 })) })
+  assert.ok(Math.abs(atBase.ratio - 1) < 0.06, `比值应≈1，实际 ${atBase.ratio}`)
+  assert.ok(atBase.score <= 82 && atBase.score >= 72, `持基线应≈80，实际 ${atBase.score}`)
+  // 两倍基线 → 40 附近；三倍 → 0
+  const twoX = healthWindowPure({ window: Array.from({ length: 300 }, (_v, i) => ({ tool: 'bash', failed: i < 22 })) })
+  assert.ok(twoX.score <= 45 && twoX.score >= 30, `两倍基线应≈40，实际 ${twoX.score}`)
+  const threeX = healthWindowPure({ window: Array.from({ length: 300 }, (_v, i) => ({ tool: 'bash', failed: i < 33 })) })
+  assert.ok(threeX.score <= 2, `约三倍基线应≈0（分段线性末端），实际 ${threeX.score}`)
+  const offChart = healthWindowPure({ window: Array.from({ length: 300 }, (_v, i) => ({ tool: 'bash', failed: i < 40 })) })
+  assert.equal(offChart.score, 0, '远超三倍基线钳到 0，不得为负')
+  // 同一失败率下，工具配比不同分数不同（edit 基线 14.3% 的 20% 失败，比 bash 基线的 20% 轻得多）
+  const edit20 = healthWindowPure({ window: Array.from({ length: 300 }, (_v, i) => ({ tool: 'edit', failed: i < 60 })) })
+  const bash20 = healthWindowPure({ window: Array.from({ length: 300 }, (_v, i) => ({ tool: 'bash', failed: i < 60 })) })
+  assert.ok(edit20.score > bash20.score, '同样的失败率，高基线工具应扣得更少')
+  // 观测缺口 / 冗余 / 发散 各扣分
+  const base = healthWindowPure({ window: Array.from({ length: 300 }, () => ({ tool: 'read', failed: false })) })
+  assert.equal(healthWindowPure({ window: Array.from({ length: 300 }, () => ({ tool: 'read', failed: false })), unpairedRate: 0.5 }).score, base.score - 5)
+  assert.equal(healthWindowPure({ window: Array.from({ length: 300 }, () => ({ tool: 'read', failed: false })), divergence: true, oscillation: true }).score, base.score - 10)
+})
+
+test('v4.7 基线选择：样本不足的工具走全局基线', () => {
+  assert.equal(baselineRateOf('bash'), 0.037)
+  assert.equal(baselineRateOf('edit'), 0.143)
+  assert.equal(baselineRateOf('subagent'), DEFAULT_BASELINE_RATE, 'subagent 仅 73 样本，不用它当基线')
+  assert.equal(baselineRateOf('web_fetch'), DEFAULT_BASELINE_RATE, '231 样本同样不足 300')
+  assert.equal(baselineRateOf('unknown-tool'), DEFAULT_BASELINE_RATE)
+  assert.ok(BASELINE_MIN_SAMPLES === 300)
 })
 
 test('MODE 常量与版本', () => {

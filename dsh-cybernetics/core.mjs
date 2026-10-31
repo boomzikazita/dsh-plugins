@@ -25,9 +25,16 @@
  *   P0-3 执行器言之有物：MODE_LIMITS(5/4/3，从未生效) → MODE_VALVE 相对基线的收缩量
  *   P1-7 采样归一：EMA 增益按 Δt 归一化（实测 dt p50=218ms/p99=134s，跨 600 倍，同一 α 含义不同）
  *   P1-4 熵告警加门控：仅当同期有冗余/发散/振荡才注入（实测 202 次里 88% 无佐证信号）
+ *
+ * v4.7（2026-11-01，补 v4.6 漏项）：健康分从会话级改成跨会话窗口级。
+ *   旧公式 (1-pHat)*100 在会话级评分，实测 309 个会话失败率中位数 0 ⇒ 分数长期钉在 100，
+ *   属 AGENTS 点名的「必饱和派生指标」；且 observationRate 恒等于 1（每个 pre-execute 必配
+ *   一个 result 钩子），本身是恒等式不是观测。改为：跨会话 300 次窗口 + 按工具基线归一
+ *   （bash 天生 3.7%、edit 14.3%），观测缺口改用真实未配对调用数。
+ *   实测分辨率：15243 个真实样本切成 300 次窗口，各段得分 46~98（旧公式全程 100）。
  */
 
-export const VERSION = 'v4.6'
+export const VERSION = 'v4.7'
 
 // 档位标签（v4.6：原 zeta 阻尼系数三档全程无人消费，纯装饰，已删）
 export const DEFAULT_MODES = { fast: '快速响应', deep: '深度分析', conservative: '保守稳定' }
@@ -265,19 +272,61 @@ export function computeEntropyPure(calls) {
 }
 
 /**
- * 健康评分（纯，C13，0-100）：
- *   基线 = 成功率（pHat 反比）×100；观测不完整扣 (1-obs)×20；冗余扣 red×10；
- *   发散/振荡各 -10。全失败 → 0，全成功 → 100。
- * 供 cybernetics_status / snap 与周检 automation 直接消费。
+ * 健康评分（v4.7，窗口级 + 按工具基线归一）——替换 C13 的会话级公式。
+ *
+ * 旧公式的致命处：`(1-pHat)*100` 在**会话级**评分。实测 309 个会话里失败率中位数是 0，
+ * 于是这个分数长期钉在 100（167 个会话末值 p50≈0、p90=0.016），既不能说好也不能说坏，
+ * 属 AGENTS 点名要警惕的「必饱和派生指标」。问题不在常数，在层级：
+ * 单个会话太短、非黑即白；跨会话 300 次的窗口才有分布。
+ *
+ * 新口径：
+ *   ① 在**跨会话滚动窗口**（默认 300 次调用）上算观测失败率；
+ *   ② 与该窗口内各工具的实测基线加权比较——bash 天生 3.7% 失败、edit 14.3%，
+ *      若一视同仁，分数只反映工具配比，不反映系统状态；
+ *   ③ ratio = 观测/基线：1.0 记 80 分，0 记 100，2 倍记 40，3 倍记 0（分段线性）；
+ *   ④ 再扣未配对调用（真观测缺口）、冗余率，发散/振荡各 5 分。
  */
-export function healthScorePure({ pHat = 0, observationRate = 1, redundantRate = 0, divergence = false, oscillation = false }) {
-  const p = Math.min(1, Math.max(0, pHat))
-  const obs = Math.min(1, Math.max(0, Number.isFinite(observationRate) ? observationRate : 1))
-  const red = Math.min(1, Math.max(0, redundantRate))
-  let score = (1 - p) * 100 - (1 - obs) * 20 - red * 10
-  if (divergence) score -= 10
-  if (oscillation) score -= 10
-  return Math.max(0, Math.min(100, Math.round(score)))
+export const TOOL_BASELINE = {
+  bash: { rate: 0.037, n: 9141 },      // 含命令级退出码口径（实测 342/9141）
+  read: { rate: 0.010, n: 1785 },
+  edit: { rate: 0.143, n: 1297 },      // FS_NOT_OBSERVED / FS_STALE_VERSION 集中在 edit
+  write: { rate: 0.051, n: 646 },
+  web_fetch: { rate: 0.160, n: 231 },
+  subagent: { rate: 0.575, n: 73 },    // 样本不足，走下面的兜底
+}
+export const DEFAULT_BASELINE_RATE = 0.056 // 全局实测 5.6%（15096 样本）
+export const BASELINE_MIN_SAMPLES = 300    // 样本不足不拿它当基线（p≈0.1 时 300 次的相对标准误约 5%）
+
+/** 某工具的有效基线（纯）：样本不足回落全局基线 */
+export function baselineRateOf(tool, table = TOOL_BASELINE) {
+  const b = table[tool]
+  return b && b.n >= BASELINE_MIN_SAMPLES ? b.rate : DEFAULT_BASELINE_RATE
+}
+
+/**
+ * 窗口级健康分（纯）。window: [{ tool, failed }]，返回 { score, n, fails, observed, expected, ratio }。
+ * 样本为空时 score=null——「没有观测」不等于「健康」，不默认满分。
+ */
+export function healthWindowPure({ window = [], redundantRate = 0, unpairedRate = 0, divergence = false, oscillation = false } = {}) {
+  const n = window.length
+  if (!n) return { score: null, n: 0, fails: 0, observed: 0, expected: 0, ratio: 0 }
+  const fails = window.reduce((a, w) => a + (w && w.failed ? 1 : 0), 0)
+  const observed = fails / n
+  const expected = window.reduce((a, w) => a + baselineRateOf(w && w.tool), 0) / n
+  const ratio = expected > 0 ? observed / expected : 0
+  let score = ratio <= 1 ? 100 - 20 * ratio : Math.max(0, 80 - 40 * (ratio - 1))
+  score -= Math.min(1, Math.max(0, Number.isFinite(unpairedRate) ? unpairedRate : 0)) * 10
+  score -= Math.min(1, Math.max(0, Number.isFinite(redundantRate) ? redundantRate : 0)) * 10
+  if (divergence) score -= 5
+  if (oscillation) score -= 5
+  return {
+    score: Math.max(0, Math.min(100, Math.round(score))),
+    n,
+    fails,
+    observed,
+    expected,
+    ratio,
+  }
 }
 
 /**
