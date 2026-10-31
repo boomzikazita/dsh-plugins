@@ -104,6 +104,7 @@ export function makeControl({ cfg, state, logState, logFile }) {
       let results = 0
       let lastResultTs = 0
       let prevTs = 0
+      const windowReplay = [] // v4.7：健康分窗口跨重启续算
       for (const l of lines) {
         let e
         try { e = JSON.parse(l) } catch { continue }
@@ -115,6 +116,9 @@ export function makeControl({ cfg, state, logState, logFile }) {
           prevTs = e.ts ?? prevTs
           lastResultTs = e.ts ?? 0
           results += 1
+          // v4.7：健康分窗口同样跨重启续算。否则每次重启窗口清零，样本不足时一次失败就得出
+          // 「观测 100% vs 基线 3.7% ⇒ 0 分」这种冷启动假信号（实测重启后 n=1 打了 0 分）。
+          if (e.tool) windowReplay.push({ tool: e.tool, failed: e.delta === 1 })
           const r = adjustControlPure({ pHat: p, autoMode, deescalateStreak, escalateStreak, divergenceStreak, control: cfg.control })
           autoMode = r.autoMode
           deescalateStreak = r.deescalateStreak
@@ -126,7 +130,14 @@ export function makeControl({ cfg, state, logState, logFile }) {
       if (results === 0) return false
       state.pHatSeed = p
       state.autoModeSeed = autoMode
-      state.recovered = { entries: lines.length, results, pHat: p, autoMode, lastResultTs }
+      // 只保留窗口容量内的尾部样本
+      const cap = cfg.control?.healthWindow ?? 300
+      if (Array.isArray(state.window) && windowReplay.length > 0) {
+        state.window = windowReplay.slice(-cap)
+        state.resTotal = state.window.length
+        state.preTotal = state.window.length
+      }
+      state.recovered = { entries: lines.length, results, pHat: p, autoMode, lastResultTs, healthWindow: state.window?.length ?? 0 }
       logState({ ts: Date.now(), event: 'boot-recover', ...state.recovered })
       return true
     } catch {

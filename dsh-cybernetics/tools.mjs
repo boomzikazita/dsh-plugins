@@ -7,9 +7,11 @@ import { valveFor } from './core.mjs'
 export function registerCyberneticsTools(ctx, d) {
   const { cfg, state, logState, sessionOf, sidOf, logFile, replayPHat, slowestTools, healthOf } = d
 
-  // v4.7：健康分改成窗口级对象，统一在这里格式化（样本不足时明确说"无观测"，不给满分）
+  // v4.7：健康分改成窗口级对象，统一在这里格式化（无观测/样本不足都不给满分）
   const fmtHealth = (h) => {
-    if (!h || h.score === null) return 'n/a（窗口内无观测）'
+    if (!h || h.score === null) {
+      return h?.insufficient ? `n/a（窗口仅 ${h.n} 次，样本不足 30，不评分）` : 'n/a（窗口内无观测）'
+    }
     return `${h.score}/100（窗口 ${h.n} 次，失败 ${h.fails}，观测 ${(h.observed * 100).toFixed(1)}% vs 基线 ${(h.expected * 100).toFixed(1)}%，比值 ${h.ratio.toFixed(2)}）`
   }
 
