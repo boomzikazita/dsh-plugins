@@ -15,13 +15,28 @@
       config:
         stateLog: '~/.dsh/cybernetics/state_log.ndjson'
         feedforward:
+          # v4.6 P1-5：模式锚定到「命令起始位置」。原 '\b(git|npm|curl|wget|pnpm)\b' 是任意位置匹配，
+          # 实测 849 次命中里混进了 `ls .../node_modules/...`、`find -name npm*` 这类纯本地只读命令
+          # （命中率 10%，实际拦截 0 次）——每次命中都要往上下文里注入一段警告文本。
           - id: 'network-unstable'
             tools: ['bash']
-            pattern: '\b(git|npm|curl|wget|pnpm)\b'
+            pattern: '"command"\s*:\s*"(?:cd\s+\S+\s*&&\s*)?(?:git|npm|curl|wget|pnpm)\b'
             action: { strategy: 'retry+timeout', retry: 2, timeout: 30000 }
         stability:
+          # 基线；实际阈值 = 基线 − 档位收缩量（fast 25 / deep 20 / conservative 15，见 core.valveFor）
           maxToolCallsPerTurn: 25
+        control:
+          # v4.6 P0-2/P0-3 实测标定（309 会话 / 15142 样本，delta 含 bash 退出码，按真实 Δt 回放）：
+          #   会话失败率 p50=0% / p75=5.4% / p90=9.8% / p95=13.3%。
+          #   escalateAt=0.60 在 17 天里 0 次触发（pHat 会话末值 max=0.111，阈值离分布 5 倍余量）。
+          #   escalateAt=0.20 → 25.9% 会话至少升一次档（pHat 72 个 + divergence 20 个），
+          #   与「失败率≥5% 的会话占 27.8%」同量级，即只在真正劣化的会话里动手；
+          #   降到 0.10 会 40% 会话误升。0.25 会更保守（20.7%），0.20 取的是"异常区持续即升"。
+          escalateAt: 0.2
+          deescalateAt: 0.15
+          alphaLow: 0.15
+          dt0Ms: 250
         modes:
-          fast: { label: '快速响应', zeta: 0.3 }
-          deep: { label: '深度分析', zeta: 0.7 }
-          conservative: { label: '保守稳定', zeta: 1.2 }
+          fast: { label: '快速响应' }
+          deep: { label: '深度分析' }
+          conservative: { label: '保守稳定' }

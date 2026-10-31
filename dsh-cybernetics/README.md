@@ -47,15 +47,38 @@
 
 | 参数 | 默认 | 含义 |
 |------|------|------|
-| `alpha` | 0.2 | EMA 滤波系数 |
-| `escalateAt` / `deescalateAt` | 0.6 / 0.15 | 升档 / 降档失败率阈值 |
+| `alphaLow` | 0.15 | EMA 基准增益（v4.6 起为唯一增益；原 alphaHigh 已删） |
+| `dt0Ms` | 250 | 采样基准周期，增益按 Δt 归一（实测 p50=218ms） |
+| `escalateAt` / `deescalateAt` | **0.20** / 0.15 | 升档 / 降档失败率阈值（v4.6 实测标定，原 0.6 不可达） |
 | `deescalateStreak` | 5 | 降档防抖连续次数（滞环） |
 | `divergenceStreak` | 3 | 连续失败判定发散 |
 | `oscillationWindow` / `oscillationRatio` | 10 / 0.7 | 振荡检测窗口 / 翻转率 |
 | `redundantWindow` | 20 | 冗余 / 熵窗口 |
-| `entropyWarnAt` / `entropyRecoverAt` | 1.0 / 1.5 | B4 低熵告警 / 恢复阈值（滞环） |
+| `entropyWarnAt` / `entropyRecoverAt` | 1.0 / 1.5 | 低熵告警 / 恢复阈值（滞环；v4.6 起还需旁证才注入） |
 
-档位 → 稳定阀阈值：`fast: 5` / `deep: 4` / `conservative: 3`（档位越高越收紧）。
+档位 → 稳定阀阈值（v4.6 起真正生效）：基线 25 − 收缩量 `fast: 0` / `deep: 5` / `conservative: 10`
+⇒ **25 / 20 / 15**。档位由控制律自动切换（发散直通，或 pHat 慢统计超阈值）。
+
+## 二点五、v4.6（2026-11-01）——《工程控制论》二次精读后的实测修正
+
+17.5 天 / 29784 条日志 / 9141 次 bash 调用做底，逐条对照书本原理：
+
+| 编号 | 原理出处 | 原缺陷（实测） | 改法 |
+|---|---|---|---|
+| P0-1 | §1.5 受控量只能经控制量改变 | bash 命令失败不进 `delta`（只有 spawn 错才 isError）。占 60% 调用量的主力工具，实测命令级真失败 **3.74%**，回路只看见 1.0% | 退出码取 `value.exitCode`，回退解析输出里 `[exit code: N]`；grep/diff 类退出 1 属约定非零，单列 `exitBenign` |
+| P0-2 | §4.11 能控性 / §15.11 增益 | `adaptiveAlpha`（连败时 α 0.15→0.5）让 pHat 与 divergence 落在同一个尖峰上——**实测共线性 100%**，两支路信息完全重叠 | 删 alphaHigh，pHat 回归恒 alphaLow 慢统计；快通路交给 divergence |
+| P0-3 | §1.7 质量指标 | `escalateAt=0.6` 离实测分布（会话末 pHat p90=0.016 / max=0.111）5 倍余量，17 天 **0 次**触发；`MODE_LIMITS(5/4/3)` 被 patch 基线短路，档位切换对阈值零影响，但告警文案仍印 5→4→3（对模型说假话） | `escalateAt` 0.6→**0.20**（25.9% 会话升档，与「失败率≥5% 会话占 27.8%」同量级）；阈值改「基线−收缩量」并统一印生效值 |
+| P1-4 | §1.7 抗扰/噪声 | 熵告警 204 次里 **62%** 的会话全程无任何旁证事件（冗余/发散/振荡） | 低熵需旁证才注入（`entropyGatePure`） |
+| P1-5 | §1.5 控制量受限 | 前馈规则任意位置匹配 `git\|npm\|curl…`，849 次命中 0 次拦截，`ls .../node_modules/...` 也被判网络操作 | 模式锚定到命令起始位 |
+| P1-6 | §15.6(3) 饱和限制 | 控制代价（每条告警的 token/注意力）从未进判据；"前馈拦截数"恒为 0 的装饰字段 | 删 `feedforwardBlocks` / `blocked` 字段 |
+| P1-7 | 第 7 章 采样系统 | dtMs 实测 p50=218ms / p99=134s / max=3.2h（跨 5 个数量级），固定 α 的时间常数不是一回事 | `emaAlphaFor(dt)`：1−(1−α₀)^(Δt/Δt₀)，钳 [α₀/5, 0.5] |
+| P1-8 | 判据精度 | verify-on-stop 49 次里 37 次只有 1 个 `write`（多为新建文件，本无覆盖风险） | 单次 write 不提醒；`edit` 或 ≥2 次写入才提醒 |
+| P2 | §21.2 多级协调 | 451 个会话各自一个控制器，无协调级，5 MB 日志无人消费 | 离线 `~/.dsh/scripts/cybernetics_rollup.py` 接入周检 |
+
+标定数据与回放脚本：`00-工作区运维/_probe_bash_exit.py`、`_calib2.py`、`_calib3.py`、`_calib4.py`。
+
+**遗留（未做，下次再谈）**：`healthScore` 仍以 pHat 为主项，会话末 pHat 中位数≈0 ⇒ 该分数长期停在 100，
+属饱和指标；要真正有分辨力需按工具基线与时间窗归一，不能在现有公式上调常数。
 
 ## 三、挂载方式
 
@@ -99,8 +122,8 @@ dsh plugin --profile web add <本地插件路径>
 ```bash
 # 语法检查
 node --check index.js && node --check core.mjs
-# 单元测试（10 用例）
-node --test test/cybernetics.test.mjs
+# 单元测试（17 用例；Node 22 下 `node --test test/` 会把目录当模块报 MODULE_NOT_FOUND）
+node --test test/*.test.mjs
 # 导入冒烟测试（需先软链 node_modules）
 node -e "import('./index.js').then(m => console.log(m.name, m.inject))"
 # 运行时验证（重启 dsh web 后）

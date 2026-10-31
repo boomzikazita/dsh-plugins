@@ -2,7 +2,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { MODE_LIMITS } from './core.mjs'
+import { valveFor } from './core.mjs'
 
 export function registerCyberneticsTools(ctx, d) {
   const { cfg, state, logState, sessionOf, sidOf, logFile, replayPHat, slowestTools, healthOf } = d
@@ -41,7 +41,6 @@ export function registerCyberneticsTools(ctx, d) {
           autoMode: s.autoMode,
           pHat: s.pHat,
           feedforwardHits: state.feedforwardHits,
-          feedforwardBlocks: state.feedforwardBlocks,
           divergence: s.divergence,
           oscillation: s.oscillation,
           redundantCalls: s.redundantCalls,
@@ -54,7 +53,8 @@ export function registerCyberneticsTools(ctx, d) {
           recovered: state.recovered,
         },
         config: {
-          maxToolCallsPerTurn: MODE_LIMITS[s.mode],
+          // v4.6 P0-3：印生效阈值（基线 − 档位收缩量），不再是从未生效的 MODE_LIMITS 5/4/3
+          maxToolCallsPerTurn: valveFor(s.mode, cfg.stability.maxToolCallsPerTurn),
           modes: cfg.modes,
           feedforward: cfg.feedforward.map((r) => ({ id: r.id, tools: r.tools ?? null, pattern: r.pattern, strategy: r.action.strategy })),
         },
@@ -66,7 +66,7 @@ export function registerCyberneticsTools(ctx, d) {
         `healthScore=${healthOf(s)}`,
         `toolCallsInTurn=${s.toolCallsInTurn}  totalToolCalls=${state.totalToolCalls}`,
         `lastDelta=${s.lastDelta}  pHat=${s.pHat.toFixed(3)}`,
-        `feedforwardHits=${state.feedforwardHits}（blocks=${state.feedforwardBlocks}）`,
+        `feedforwardHits=${state.feedforwardHits}`,
         `divergence=${s.divergence}  oscillation=${s.oscillation}`,
         `redundantCalls=${s.redundantCalls}  entropy=${s.entropy.toFixed(3)}`,
         `observationRate=${typeof s.observationRate === 'number' ? s.observationRate.toFixed(3) : s.observationRate}`,
@@ -110,8 +110,10 @@ export function registerCyberneticsTools(ctx, d) {
       const deltas = results.map((e) => e.delta).filter((d) => typeof d === 'number')
       const meanDelta = deltas.length ? (deltas.reduce((a, b) => a + b, 0) / deltas.length).toFixed(3) : 'n/a'
       const hits = entries.filter((e) => e.feedforward).length
-      const blocked = entries.filter((e) => e.blocked).length
       const switches = entries.filter((e) => e.event === 'mode-switch')
+      // v4.6 P0-1：命令级失败（bash 退出码）单列——原 status 只看 isError，看不见这块
+      const cmdFails = results.filter((e) => typeof e.exitCode === 'number' && e.exitCode !== 0 && !e.exitBenign).length
+      const cmdBenign = results.filter((e) => e.exitBenign).length
 
       // C9 交叉校验：内存态 pHat vs 日志回放 pHat
       const replay = replayPHat(n)
@@ -124,8 +126,9 @@ export function registerCyberneticsTools(ctx, d) {
         `工具调用（累计）: ${state.totalToolCalls}`,
         `日志内工具调用: ${results.length}`,
         `delta 均值（0=成功，1=失败）: ${meanDelta}`,
+        `命令级失败（bash 退出码非零）: ${cmdFails}（约定非零 ${cmdBenign}：grep/diff 无匹配不算失败）`,
         `失败率估计 pHat（EMA）: ${typeof s.pHat === 'number' ? s.pHat.toFixed(3) : 'n/a'}${driftNote}`,
-        `前馈命中: ${hits}（拦截: ${blocked}）`,
+        `前馈命中: ${hits}`,
         `当前模式: ${s.mode}（${s.modeSource}${s.modeSource === 'manual' ? '，手动临时' : '，自适应'}` +
           (switches.length ? `；最近档位切换: ${switches[switches.length - 1].from}→${switches[switches.length - 1].to}（${switches[switches.length - 1].cause}）` : '') + '）',
         `发散: ${s.divergence}  振荡: ${s.oscillation}`,

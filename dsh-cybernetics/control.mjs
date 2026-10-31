@@ -1,9 +1,15 @@
 // dsh-cybernetics 控制律与状态回放（2026-10-25 从 index.js 下沉，verbatim）
 // 工厂注入 apply 作用域依赖；返回全部控制器供钩子与工具共用
 import { readFileSync, existsSync } from 'node:fs'
-import { MODE_LIMITS, ema, adaptiveAlpha, detectOscillationPure, adjustControlPure, execArgsText, healthScorePure } from './core.mjs'
+import { valveFor, ema, emaAlphaFor, detectOscillationPure, adjustControlPure, execArgsText, healthScorePure } from './core.mjs'
 
 export function makeControl({ cfg, state, logState, logFile }) {
+  // 稳定阀基线与采样基准周期（v4.6）：档位执行效果与 EMA 增益都从这里取
+  const valveBase = cfg.stability?.maxToolCallsPerTurn ?? 25
+  const dt0 = cfg.control?.dt0Ms ?? 250
+  const alpha0 = cfg.control?.alphaLow ?? 0.15
+  const alphaOf = (dtMs) => emaAlphaFor(dtMs, { alpha0, dt0 })
+
   // ---------- 控制律（P0-1 闭合回路 + P1-1 滤波 + P1-2 检测；按会话） ----------
   function pushResultBuf(s, delta) {
     s.resultBuf.push(delta)
@@ -19,10 +25,10 @@ export function makeControl({ cfg, state, logState, logFile }) {
     }
     return s.mode
   }
-  function adjustControl(s, delta) {
-    // v4.3 自适应增益：连续失败时大 α 快速跟上现实，稳态小 α 强滤波抗抖动（对照 15.11）
-    const alpha = adaptiveAlpha(s.divergenceStreak, cfg.control)
-    // P1-1 一阶递归滤波：pHat = (1-α)·pHat + α·delta
+  function adjustControl(s, delta, dtMs) {
+    // v4.6 P1-7 采样归一：增益按真实 Δt 归一（固定 α 在不同调用节奏下时间常数差 600 倍）
+    const alpha = alphaOf(dtMs)
+    // P1-1 一阶递归滤波：pHat = (1-α)·pHat + α·delta（慢统计，快通路交给 divergence）
     s.pHat = ema(s.pHat, delta, alpha)
     // 发散检测：连续失败（正反馈发散倾向）
     s.divergenceStreak = delta === 1 ? s.divergenceStreak + 1 : 0
@@ -70,7 +76,9 @@ export function makeControl({ cfg, state, logState, logFile }) {
       const reason = r.escalated
         ? (s.divergence ? `连续 ${s.divergenceStreak} 次失败（发散直通升档）` : `失败率 pHat=${s.pHat.toFixed(2)} 连续超阈值 ${cfg.control.escalateAt}`)
         : `失败率 pHat=${s.pHat.toFixed(2)} 连续 ${cfg.control.deescalateStreak} 次低于阈值 ${cfg.control.deescalateAt}`
-      queueWarn(s, `[控制律] ${reason}，模式档位 ${prev}→${r.autoMode}（稳定阀阈值 ${MODE_LIMITS[prev]}→${MODE_LIMITS[r.autoMode]}）`)
+      // v4.6 P0-3：打印**生效阈值**（基线 − 档位收缩量）。原实现印 MODE_LIMITS 的 5/4/3，
+      // 而 patch 的基线 25 一直短路它，等于对模型报了一个不存在的限值。
+      queueWarn(s, `[控制律] ${reason}，模式档位 ${prev}→${r.autoMode}（稳定阀阈值 ${valveFor(prev, valveBase)}→${valveFor(r.autoMode, valveBase)}）`)
     }
     s.deescalateStreak = r.deescalateStreak
     s.escalateStreak = r.escalateStreak
@@ -95,13 +103,16 @@ export function makeControl({ cfg, state, logState, logFile }) {
       let divergenceStreak = 0
       let results = 0
       let lastResultTs = 0
+      let prevTs = 0
       for (const l of lines) {
         let e
         try { e = JSON.parse(l) } catch { continue }
         if (e.event === 'result' && typeof e.delta === 'number') {
           divergenceStreak = e.delta === 1 ? divergenceStreak + 1 : 0
-          const alpha = adaptiveAlpha(divergenceStreak, cfg.control)
-          p = ema(p, e.delta, alpha)
+          // v4.6：回放与实时同口径（按 Δt 归一），否则跨重启续算的 pHat 与实时值系统性偏离
+          const dt = prevTs > 0 && e.ts ? e.ts - prevTs : 0
+          p = ema(p, e.delta, alphaOf(dt))
+          prevTs = e.ts ?? prevTs
           lastResultTs = e.ts ?? 0
           results += 1
           const r = adjustControlPure({ pHat: p, autoMode, deescalateStreak, escalateStreak, divergenceStreak, control: cfg.control })
@@ -130,11 +141,16 @@ export function makeControl({ cfg, state, logState, logFile }) {
       const lines = readFileSync(logFile, 'utf8').split('\n').filter(Boolean).slice(-n)
       let p = 0
       let count = 0
+      let prevTs = 0
       for (const l of lines) {
         let e
         try { e = JSON.parse(l) } catch { continue }
         if (e.event === 'result' && typeof e.delta === 'number') {
-          p = ema(p, e.delta, cfg.control.alpha)
+          // v4.6：与实时同一条增益规则（按 Δt 归一）。原实现用固定的 cfg.control.alpha(0.2)，
+          // 而实时走 adaptiveAlpha(0.15/0.5)，两边口径不同 ⇒ 「漂移可疑」必然误报。
+          const dt = prevTs > 0 && e.ts ? e.ts - prevTs : 0
+          p = ema(p, e.delta, alphaOf(dt))
+          prevTs = e.ts ?? prevTs
           count += 1
         }
       }
@@ -196,6 +212,11 @@ export function makeControl({ cfg, state, logState, logFile }) {
   }
   function verifyOnStopWarn(s) {
     if (s.turnWrites.length === 0 || s.turnVerifies > 0) return null
+    // v4.6 P1-8 精度修正：实测 49 次触达里 37 次只有 1 个写入，而单次 write 多半是**新建文件**，
+    // 本就不存在「覆盖了原有内容却没人核对」的风险，属系统性误报。
+    // 只在「改既有内容（edit）」或「成批写入（≥2）」时提醒。
+    const hasEdit = s.turnWrites.includes('edit')
+    if (!hasEdit && s.turnWrites.length < 2) return null
     return `[verify-on-stop] 上一轮有 ${s.turnWrites.length} 次文件写入（${[...new Set(s.turnWrites)].join('/')}）但无任何回读验证（read/grep/glob）。完成声明前请回读目标文件确认落盘内容——「写了但没验证」属降级报告。`
   }
 
