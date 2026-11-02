@@ -3,5 +3,5 @@
 # v0.2.0：skill_mece_check 自 dsh-skill-lazy 并入；Python 解释器可用 config.python 覆盖（默认 python3）
 - insert:
     - id: skill-authoring
-      name: 'dsh-skill-authoring'
+      name: '@boomzzzzzz/dsh-skill-authoring'
       config: {}

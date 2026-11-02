@@ -11,7 +11,7 @@
 #   dsh-approval-gate 的组件（仅 ~/.dsh.sealed 存有 hermes 时代封存副本）。
 - insert:
     - id: cybernetics
-      name: 'dsh-cybernetics'
+      name: '@boomzzzzzz/dsh-cybernetics'
       config:
         stateLog: '~/.dsh/cybernetics/state_log.ndjson'
         feedforward:
