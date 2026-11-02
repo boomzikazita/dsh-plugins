@@ -34,7 +34,7 @@
  *   实测分辨率：15243 个真实样本切成 300 次窗口，各段得分 46~98（旧公式全程 100）。
  */
 
-export const VERSION = 'v4.7'
+export const VERSION = 'v4.8'
 
 // 档位标签（v4.6：原 zeta 阻尼系数三档全程无人消费，纯装饰，已删）
 export const DEFAULT_MODES = { fast: '快速响应', deep: '深度分析', conservative: '保守稳定' }

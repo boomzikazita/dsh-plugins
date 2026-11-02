@@ -255,6 +255,18 @@ export function apply(ctx, config = {}) {
       divergence: s.divergence,
       oscillation: s.oscillation,
     })
+    // 2026-11-01：补记 gate 判据输入，供 rollup 用「同源口径」算误报率
+    //   背景：rollup 原用「是否发出过 divergence/oscillation/redundant 告警事件」当旁证，
+    //   而 gate 用的是三项即时状态值——两边口径不同，34/56 的"误报"大半是假账。
+    //   只在本轮构成低熵候选时记一行，避免每步都写日志。
+    if (s.recentCalls.length >= 8 && s.entropy < cfg.control.entropyWarnAt) {
+      logState({ ts: now, event: 'entropy-gate', sid, entropy: s.entropy,
+                 window: s.recentCalls.length, redundantCalls: windowDup ? 1 : 0,
+                 divergence: s.divergence, oscillation: s.oscillation,
+                 corroborated: entropyCorroborated, exempt: entropyExempt,
+                 warned: s.entropyWarned })
+    }
+
     if (!entropyExempt && entropyCorroborated && s.recentCalls.length >= 8 && s.entropy < cfg.control.entropyWarnAt && !s.entropyWarned) {
       s.entropyWarned = true
       logState({ ts: now, event: 'entropy-warn', sid, entropy: s.entropy, window: s.recentCalls.length })
