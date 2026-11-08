@@ -4,3 +4,6 @@ _harness/
 _plugin_push/
 *.log
 dsh-context/
+
+# 集成冒烟临时目录
+test/.smoke-tmp/

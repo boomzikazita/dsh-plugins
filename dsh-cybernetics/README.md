@@ -1,146 +1,92 @@
-# dsh-cybernetics — 控制论内核 v4 运行时（DeepSeek Harness 插件）
+# dsh-cybernetics — 控制论内核 v5（逻辑控制 + 可靠性 + 跨会话汇总）
 
-> 由存档 `dsh-cybernetics插件源码存档.md`（v4.1，2026-08-16 卸载前）与
-> `dsh-cybernetics插件开发与自进化经验.md` 重建。
-> 对照《工程控制论》（钱学森/宋健·第三版）实现的机制级 Cordis 插件（ESM）。
+> DeepSeek Harness 插件（ESM）。本版是 2026-11-08 对照钱学森/宋健《工程控制论》
+> （第三版）重读后的**重构**，不是调参。理论依据与旧版的错位见下文。
+>
+> 包：`@boomzzzzzz/dsh-cybernetics@0.3.0`　运行时版本常量：`v5.0`
 
-## 一、文件清单
+## 一、为什么重构：章节选错了
 
-| 文件 | 说明 |
-|------|------|
-| `index.js` | 主插件（v4.2，808 行） |
-| `core.mjs` | 纯函数控制律内核（EMA/滞环/发散/振荡/hash/熵/健康评分），供单元测试与外部复用 |
-| `test/cybernetics.test.mjs` | 单元测试（node:test，10 用例全绿） |
-| `cordis.patch.yml` | 插件自身 bundle patch（默认配置） |
-| `package.json` | 包声明（dependencies 为空——依赖软链到全局宿主） |
+旧版 v4.x 把 agent 工具调用当成**有运动方程的受控对象**：EMA（一阶递归滤波）估计失败率
+`pHat`、档位（fast/deep/conservative）自适应、稳定阀收缩工具调用上限、熵告警、振荡检测、
+healthScore。对照原书，这套机器属于**第一至第十五章**（物理系统的微分方程、传递函数、
+稳定性判据），而 agent 的工具调用是离散 0/1 序列：
 
-## 二、机制（v4.2）
+- **第十七章**（逻辑控制和有限自动机）明确写道：这类"仅取值为 0 或 1 的信号序列"，
+  "前面各章内所述的原理和方法很少有所帮助"，分析工具是逻辑代数与时序逻辑。
+  §17.1 的防空警报例子就是标准范式："连续三次或三次以上搜索发现目标 → 报警；
+  报警后连续四次或四次以上无信号 → 解除。"——滞环逻辑，不是反馈控制。
+- **第十九章**（冗余技术和容错系统）才是工具失败的正确框架：λ、MTBF、k/N 冗余、
+  致命/局部故障分类、自检 + 备份。
+- **第二十一章**（大系统）给出多级结构：下层自治、上层汇总（多会话/多 agent 协调）。
 
-经典控制回路：
+旧版自己的实测也印证了错位：`escalateAt=0.6` 17 天 0 次触发、`MODE_LIMITS` 从未生效、
+熵告警 62–88% 无旁证、`observationRate` 恒等于 1、healthScore 长期钉在 100、
+前馈 849 次命中 0 次拦截。问题不是阈值没调好，是机制用错了章节。
 
-- **观测器**：内存状态（按 session 分区）+ JSONL 持久化（`~/.dsh/cybernetics/state_log.ndjson`）
-- **前馈控制**：`tools/pre-execute` 规则表拦截（工具名白名单 + 参数正则）+ 本轮调用计数
-- **反馈校正**：`tools/result` → delta → EMA 滤波（pHat）→ 控制律（档位自适应 + 发散/振荡检测）
-- **执行器**：`cybernetics_snap` / `cybernetics_status` / `cybernetics_check` / `cybernetics_sandbox_mode`
-- **能控性自检**：目标 + 所需工具 vs 当前可用工具（插件工具 ∪ 观测记忆）
+## 二、现在的机制（按章节）
 
-### v4.2 完善项（2026-08-19，对照 v4.1 实测反馈）
-
-| 项 | 内容 |
-|----|------|
-| A1 | 修复冗余 hash 假误报：rc.6 下 `exec.args` 恒 undefined → 改用参数文本（`execArgsText`，arguments 优先） |
-| A2 | 观测完整率钳制 ≤1（孤儿 result 不再把分子顶破） |
-| A3 | boot 日志回放恢复：pHat/档位跨重启续算（`boot-recover` 事件），消除系统失忆 |
-| B4 | 信息熵告警：工具单一化（<1.0 且窗口 ≥8 次）注入警告，熵 ≥1.5 恢复（滞环防抖） |
-| B5 | 工具耗时观测：result 记 `dtMs`，status/snap 输出最慢 TOP3 |
-| B6 | `agent/disposed` 会话汇总：`session-summary` 事件（pHat 起止/档位/冗余/慢工具），供周检 automation |
-| B7 | 按 session 分区状态：并发会话 pHat/档位/计数互不污染，无 session 路径归 `global` 兜底 |
-| C8 | 冗余事件聚合：每 10 次记一条 `redundant-burst`，不再逐条刷日志 |
-| C9 | status 内存态与日志回放态交叉校验，漂移 >0.1 标注 |
-| C10 | 版本常量 `VERSION` 统一（core.mjs） |
-| C11 | 警告注入失败留痕（`dropped-warn` 事件） |
-| C12 | 纯函数下沉 core.mjs + node:test 单元测试 |
-| C13 | 健康评分 `healthScore`（0-100：成功率×100 − 观测缺口×20 − 冗余率×10 − 发散/振荡各 10） |
-| C14 | 失败归因观测（2026-08-19，方案 B）：result 事件失败时记 `errorType`（FsError code 优先，如 FS_EDIT_NOT_FOUND/FS_AMBIGUOUS_EDIT；无 code 按消息模式归类）+ `errMsg`（截断 120 字符）——供周检第④项做失败根因分布 |
-
-核心参数（`control`，均可经 patch 配置）：
-
-| 参数 | 默认 | 含义 |
-|------|------|------|
-| `alphaLow` | 0.15 | EMA 基准增益（v4.6 起为唯一增益；原 alphaHigh 已删） |
-| `dt0Ms` | 250 | 采样基准周期，增益按 Δt 归一（实测 p50=218ms） |
-| `escalateAt` / `deescalateAt` | **0.20** / 0.15 | 升档 / 降档失败率阈值（v4.6 实测标定，原 0.6 不可达） |
-| `deescalateStreak` | 5 | 降档防抖连续次数（滞环） |
-| `divergenceStreak` | 3 | 连续失败判定发散 |
-| `oscillationWindow` / `oscillationRatio` | 10 / 0.7 | 振荡检测窗口 / 翻转率 |
-| `redundantWindow` | 20 | 冗余 / 熵窗口 |
-| `entropyWarnAt` / `entropyRecoverAt` | 1.0 / 1.5 | 低熵告警 / 恢复阈值（滞环；v4.6 起还需旁证才注入） |
-
-档位 → 稳定阀阈值（v4.6 起真正生效）：基线 25 − 收缩量 `fast: 0` / `deep: 5` / `conservative: 10`
-⇒ **25 / 20 / 15**。档位由控制律自动切换（发散直通，或 pHat 慢统计超阈值）。
-
-## 二点五、v4.6（2026-11-01）——《工程控制论》二次精读后的实测修正
-
-17.5 天 / 29784 条日志 / 9141 次 bash 调用做底，逐条对照书本原理：
-
-| 编号 | 原理出处 | 原缺陷（实测） | 改法 |
+| 层 | 实现 | 章节 | 说明 |
 |---|---|---|---|
-| P0-1 | §1.5 受控量只能经控制量改变 | bash 命令失败不进 `delta`（只有 spawn 错才 isError）。占 60% 调用量的主力工具，实测命令级真失败 **3.74%**，回路只看见 1.0% | 退出码取 `value.exitCode`，回退解析输出里 `[exit code: N]`；grep/diff 类退出 1 属约定非零，单列 `exitBenign` |
-| P0-2 | §4.11 能控性 / §15.11 增益 | `adaptiveAlpha`（连败时 α 0.15→0.5）让 pHat 与 divergence 落在同一个尖峰上——**实测共线性 100%**，两支路信息完全重叠 | 删 alphaHigh，pHat 回归恒 alphaLow 慢统计；快通路交给 divergence |
-| P0-3 | §1.7 质量指标 | `escalateAt=0.6` 离实测分布（会话末 pHat p90=0.016 / max=0.111）5 倍余量，17 天 **0 次**触发；`MODE_LIMITS(5/4/3)` 被 patch 基线短路，档位切换对阈值零影响，但告警文案仍印 5→4→3（对模型说假话） | `escalateAt` 0.6→**0.20**（25.9% 会话升档，与「失败率≥5% 会话占 27.8%」同量级）；阈值改「基线−收缩量」并统一印生效值 |
-| P1-4 | §1.7 抗扰/噪声 | 熵告警 204 次里 **62%** 的会话全程无任何旁证事件（冗余/发散/振荡） | 低熵需旁证才注入（`entropyGatePure`） |
-| P1-5 | §1.5 控制量受限 | 前馈规则任意位置匹配 `git\|npm\|curl…`，849 次命中 0 次拦截，`ls .../node_modules/...` 也被判网络操作 | 模式锚定到命令起始位 |
-| P1-6 | §15.6(3) 饱和限制 | 控制代价（每条告警的 token/注意力）从未进判据；"前馈拦截数"恒为 0 的装饰字段 | 删 `feedforwardBlocks` / `blocked` 字段 |
-| P1-7 | 第 7 章 采样系统 | dtMs 实测 p50=218ms / p99=134s / max=3.2h（跨 5 个数量级），固定 α 的时间常数不是一回事 | `emaAlphaFor(dt)`：1−(1−α₀)^(Δt/Δt₀)，钳 [α₀/5, 0.5] |
-| P1-8 | 判据精度 | verify-on-stop 49 次里 37 次只有 1 个 `write`（多为新建文件，本无覆盖风险） | 单次 write 不提醒；`edit` 或 ≥2 次写入才提醒 |
-| P2 | §21.2 多级协调 | 451 个会话各自一个控制器，无协调级，5 MB 日志无人消费 | 离线 `~/.dsh/scripts/cybernetics_rollup.py` 接入周检 |
+| 逻辑控制 | `logic.mjs` | §17 | 显式状态机：连续失败 ≥3 报警，连续成功 ≥4 解除；确定性故障阈值降为 2；致命故障立即报；同一调用连续 3 次重复报警。一次事件段只注入一条（修掉 52 连跪那种单轮 51 次注入） |
+| 可靠性 | `reliability.mjs` | §19 | 每工具 λ̂、95% Wilson 区间、MTBF（次/失败）、故障分类（暂态/确定性/可纠正/致命/未归类）、重试预算下可恢复上限 `1-(1-λ_暂态)^budget`、浪费重试计数 |
+| 汇总 | `cybernetics_rollup` | §21 | 跨会话读 NDJSON，按时间窗汇总会话/调用/λ/故障构成/告警/浪费重试/最慢工具 |
+| 自检 | `verify-on-stop` | §19 | 本 turn 有 edit 或 ≥2 次写入但无回读 → turn 边界提醒；单次新建 write 不提醒 |
+| 宿主能力 | `cybernetics_sandbox_mode` | — | 切换会话沙箱；提权走宿主审批门 |
 
-标定数据与回放脚本：`00-工作区运维/_probe_bash_exit.py`、`_calib2.py`、`_calib3.py`、`_calib4.py`。
+**已删除**：EMA/`pHat`、档位机、稳定阀、工具分布熵、振荡检测、healthScore、
+`adaptiveAlpha`、Δt 归一、前馈规则表（含 `network-unstable`，实测对 `git status`
+也注入噪声）。运行时约 1530 行降到 1236 行（净删 292 行运行时 + 306 行旧测试），测试从 17 条纯函数变成 35 条 + 9 项集成冒烟。
 
-## 二点六、v4.7（2026-11-01）——补 v4.6 漏掉的饱和指标
+## 三、工具
 
-v4.6 的诊断里点了 healthScore 的名，但行动清单里漏了它。它属于「装饰指标」那一类：
-
-| 缺陷（实测） | 改法 |
+| 工具 | 用途 |
 |---|---|
-| `(1-pHat)*100` 在**会话级**评分。309 个会话失败率中位数 **0**、p90=0.016 ⇒ 分数长期钉在 100 | 改**跨会话 300 次窗口**，window 由 `index.js` 钩子维护 |
-| 各工具一视同仁 ⇒ 分数只反映工具配比 | 按工具**实测基线**归一（bash 3.7% / edit 14.3% / read 1%），样本 <300 的工具回落全局 5.6% |
-| `observationRate` 恒等于 1（每个 pre-execute 必配一个 result 钩子）——恒等式不是观测 | 改用**真实未配对调用数** `(preTotal−resTotal)/preTotal` |
-| 空观测返回 100（把「没看见」当「都好」） | 空窗口返回 `null`，显示 `n/a（窗口内无观测）` |
+| `cybernetics_status` | 本会话逻辑态 + 跨会话工具可靠性（λ/CI/MTBF/故障构成/重试预算/浪费重试/最慢） |
+| `cybernetics_snap` | 把当前事实写入日志（snap 事件） |
+| `cybernetics_rollup` | 跨会话汇总（`days` 默认 7，`limit` 默认 5000 行） |
+| `cybernetics_check` | 工具可用性自检（能力清单，不再叫"能控性"） |
+| `cybernetics_sandbox_mode` | 切换会话文件沙箱（提权需宿主批准） |
 
-评分曲线：观测/基线 = 1.0 → 80 分；0 → 100；2 倍 → 40；3 倍 → 0（分段线性），再扣观测缺口、冗余、发散/振荡。
-实测分辨率：15243 个真实样本切 300 次窗口，各段得分 **46 ~ 98**（旧公式全程 100）。
-
-## 三、挂载方式
-
-**标准安装（bundle，推荐）**——本目录即 bundle 形态，含自身 `cordis.patch.yml`：
-
-```bash
-dsh plugin --profile web add <本地插件路径>
-```
-
-或手工方式（旧版本兼容）：把 `dsh-cybernetics` 加入 profile 的 `dsh.profile.bundles`，
-或直接追加到 profile 的 `cordis.patch.yml`：
+## 四、配置（`cordis.patch.yml`）
 
 ```yaml
-# 追加到 ~/.dsh/profiles/web/cordis.patch.yml 或 headless
-- insert:
-    - id: cybernetics
-      name: '<插件安装路径>/index.js'
+config:
+  stateLog: '~/.dsh/cybernetics/state_log.ndjson'
+  logic: { failStreak: 3, recoverStreak: 4, deterministicStreak: 2, repeatAlarm: 3 }
+  reliability: { minSamples: 5, retryBudget: { bash: 2, read: 1, edit: 1, write: 0, web_fetch: 2, default: 1 } }
+  log: { maxBytes: 8388608, keep: 3 }
 ```
 
-**关键**：插件 node_modules 必须软链到全局宿主（`ln -s $DSH_NODE_MODULES node_modules`），
-**绝不自己 pnpm 装依赖**——否则 `TOOL_RUNTIME_SCHEDULER` Symbol 不匹配，所有工具调度崩溃。
+## 五、日志
 
-## 四、开发教训（来自经验文档）
+JSONL，事件：`boot`/`session-start`/`pre-execute`/`result`/`alarm`/`wasted-retry`/
+`verify-on-stop`/`sandbox-mode-switch`/`snap`/`session-summary`。
+`result` 带 `failed`、`kind`、`errorType`、`dtMs`，bash 另带 `exitCode`/`exitBenign`。
+超过 `maxBytes` 自动转存 `.1`、`.2`、`.3`，不再无限增长（旧版 17.5 天 5 MB 无人消费）。
 
-1. **依赖副本冲突（最大坑）**：插件自装 `@deepseek-ai/dsh-tools` → 宿主出现两个副本 →
-   `TOOL_RUNTIME_SCHEDULER`（module-level Symbol）不同 → 所有工具调度崩。解法：软链到全局宿主。
-2. **waterfall 监听器必须 `return next()`**：光调 `next()` 返回 undefined → 断链 → 后续工具全崩。
-3. **rc.6 defineTool 签名**：`execute(args, exec)` + `output:{schema, render}`；工具列表用 `ctx.tools.schemas()`。
-4. **HMR 副作用回滚**：改插件后 cordis HMR 只重载配置，`ctx.tools.register` 副作用被回滚 → 需重启 `dsh web`。
-5. **稳定阀三缺陷（积分饱和教训）**：计数器跨轮累计不重置 → 锁死（改滑动窗口）；
-   一票否决无恢复路径（降级为警告注入）；全部工具一视同仁（交互/观测工具豁免）。
-6. **TRANSPORT 报错根因**：`tools/pre-execute`（工具执行期）注入消息破坏角色交替约束 →
-   移到 `agent/pre-step`（请求组装期）用 `createUserMessage` 构造完整消息。
-7. **控制律要自适应**：档位切换 + 滞环防抖；**反馈要滤波**（EMA 估计失败率）。
-8. **能控性判定防冷启动误报**：观测记忆持久化（`observed_tools.json`）+ 未观测 ≠ 缺失的语义分层。
-9. **rc.6 参数字段是 `arguments` 不是 `args`**：所有 exec 参数读取必须走 `execArgsText`，
-   否则 `exec.args` 恒 undefined（A1 假冗余根因）。
-
-## 五、验证
+## 六、验证
 
 ```bash
-# 语法检查
-node --check index.js && node --check core.mjs
-# 单元测试（17 用例；Node 22 下 `node --test test/` 会把目录当模块报 MODULE_NOT_FOUND）
-node --test test/*.test.mjs
-# 导入冒烟测试（需先软链 node_modules）
-node -e "import('./index.js').then(m => console.log(m.name, m.inject))"
-# 运行时验证（重启 dsh web 后）
-cybernetics_status   # 应含 healthScore / boot 恢复 / 最慢工具
-# A3 生效标志：重启后日志出现 event:"boot-recover"
-grep boot-recover ~/.dsh/cybernetics/state_log.ndjson | tail -1
-# A1 生效标志：重启后冗余计数骤降（不再每调一次 bash 都算冗余）
-grep redundant-burst ~/.dsh/cybernetics/state_log.ndjson | tail -1
+node --check index.js && node --check logic.mjs && node --check reliability.mjs
+node --test test/*.test.mjs          # 35 条：逻辑状态机穷举 + 可靠性数学 + 共享纯函数
+node test/smoke.integration.mjs      # 9 项集成冒烟（需 node_modules/@deepseek-ai/dsh-tools）
 ```
+
+## 七、从 0.2.x 迁移
+
+- 工具名不变（`snap`/`status`/`check`/`sandbox_mode`），新增 `rollup`；
+  `snap` 的 `mode` 参数已删除。
+- 日志字段：`delta` 保留（兼容），新增 `failed`/`kind`；旧日志行仍可被 `rollup` 统计。
+- 配置：`control`/`modes`/`stability`/`feedforward` 段全部失效，换成 `logic`/`reliability`/`log`。
+- 安装后需要**重启 dsh web**（HMR 会回滚 `ctx.tools.register` 的副作用）。
+
+## 八、局限（诚实清单）
+
+- 状态机是**逻辑告警**，不是控制回路：它不会让失败率下降，只保证"该报的时候报一次、
+  不该报的时候不吵"。真正的动作（换路、重试、问用户）仍由模型执行。
+- λ/MTBF 是**外模型**（统计关系），不是内模型（运动方程）；样本小的时候 CI 很宽，
+  报告里必须带着区间看。
+- `重试可恢复上限` 是上界而不是预测：它假设暂态故障独立，确定性故障重试无效。
+- `cybernetics_check` 只是工具名单核对，不构成"能控性"分析（能控性在原书里是
+  状态空间矩阵的秩条件，需要模型）。

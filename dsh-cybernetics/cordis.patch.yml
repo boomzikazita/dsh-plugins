@@ -1,42 +1,47 @@
-# dsh-cybernetics bundle patch — 控制论内核 v4 运行时
-# 挂载：把 dsh-cybernetics 加入 profile 的 dsh.profile.bundles
-# v0.2.1（2026-10-15）：
-#   1. 前馈正则修正：YAML 单引号不转义 ⇒ '\\b(...)\\b' 解析成**双反斜杠**，
-#      new RegExp(...).test('git status') === false，规则从未命中（实据：516 次
-#      pre-execute 带 feedforward 字段 0 条）。改为单反斜杠 '\b(...)\b'。
-#   2. 稳定阀基线：窗口已由「每 step 清零」修正为「按 turn 清零」，故基线取 25
-#      （原 5 在按 step 口径下永不触发，按 turn 口径下会每轮误报）。
-#   注：v0.2.0 起的规则收敛说明——不可逆拦截已不在本插件，「批不批」由宿主审批门
-#   （tools/pre-execute 返回 {kind:'ask'} → ctx.approval.request）承担；本机并无名为
-#   dsh-approval-gate 的组件（仅 ~/.dsh.sealed 存有 hermes 时代封存副本）。
+# dsh-cybernetics bundle patch — 控制论内核 v5（逻辑控制 + 可靠性 + 跨会话汇总）
+#
+# 章节依据（钱学森/宋健《工程控制论》第三版）：
+#   第十七章 逻辑控制和有限自动机 → logic.mjs 的显式状态机（滞环、单次告警、重复调用）
+#   第十九章 冗余技术和容错系统   → reliability.mjs 的 λ/MTBF/k-N 冗余上限与故障分类
+#   第二十一章 大系统             → cybernetics_rollup 的跨会话汇总
+# 已删除：EMA/pHat、档位（fast/deep/conservative）、稳定阀、熵告警、振荡检测、
+# healthScore、adaptiveAlpha、前馈网络规则表。它们对应的是有运动方程的物理受控对象
+# （第一章至第十五章），agent 的工具调用不属于那一类。
 - insert:
     - id: cybernetics
       name: '@boomzzzzzz/dsh-cybernetics'
       config:
         stateLog: '~/.dsh/cybernetics/state_log.ndjson'
-        feedforward:
-          # v4.6 P1-5：模式锚定到「命令起始位置」。原 '\b(git|npm|curl|wget|pnpm)\b' 是任意位置匹配，
-          # 实测 849 次命中里混进了 `ls .../node_modules/...`、`find -name npm*` 这类纯本地只读命令
-          # （命中率 10%，实际拦截 0 次）——每次命中都要往上下文里注入一段警告文本。
-          - id: 'network-unstable'
-            tools: ['bash']
-            pattern: '"command"\s*:\s*"(?:cd\s+\S+\s*&&\s*)?(?:git|npm|curl|wget|pnpm)\b'
-            action: { strategy: 'retry+timeout', retry: 2, timeout: 30000 }
-        stability:
-          # 基线；实际阈值 = 基线 − 档位收缩量（fast 25 / deep 20 / conservative 15，见 core.valveFor）
-          maxToolCallsPerTurn: 25
-        control:
-          # v4.6 P0-2/P0-3 实测标定（309 会话 / 15142 样本，delta 含 bash 退出码，按真实 Δt 回放）：
-          #   会话失败率 p50=0% / p75=5.4% / p90=9.8% / p95=13.3%。
-          #   escalateAt=0.60 在 17 天里 0 次触发（pHat 会话末值 max=0.111，阈值离分布 5 倍余量）。
-          #   escalateAt=0.20 → 25.9% 会话至少升一次档（pHat 72 个 + divergence 20 个），
-          #   与「失败率≥5% 的会话占 27.8%」同量级，即只在真正劣化的会话里动手；
-          #   降到 0.10 会 40% 会话误升。0.25 会更保守（20.7%），0.20 取的是"异常区持续即升"。
-          escalateAt: 0.2
-          deescalateAt: 0.15
-          alphaLow: 0.15
-          dt0Ms: 250
-        modes:
-          fast: { label: '快速响应' }
-          deep: { label: '深度分析' }
-          conservative: { label: '保守稳定' }
+        observedToolsFile: '~/.dsh/cybernetics/observed_tools.json'
+        logic:
+          # 连续失败阈值（§17.1：三次连续发现目标 → 报警；此处失败即"目标"）
+          failStreak: 3
+          # 连续成功阈值（§17.1：四次连续无信号 → 解除）
+          recoverStreak: 4
+          # 确定性故障（沙箱拒绝/权限/参数非法/未知工具）阈值更低：重试同调用 100% 再失败
+          deterministicStreak: 2
+          # 同一调用（同工具+同参数）连续重复阈值
+          repeatAlarm: 3
+          repeatExemptTools:
+            - job_output
+            - job_kill
+            - list_agents
+            - todo_write
+            - cybernetics_status
+            - cybernetics_snap
+            - cybernetics_rollup
+        reliability:
+          # 单工具样本少于该值不出 λ（避免小样本给出极端比例）
+          minSamples: 5
+          # 重试预算：只是报告"预算内可恢复上限"的策略口径，插件不强制
+          retryBudget:
+            bash: 2
+            read: 1
+            edit: 1
+            write: 0
+            web_fetch: 2
+            default: 1
+        log:
+          # 日志轮转：超过 8 MB 转存 .1，保留 3 个历史文件
+          maxBytes: 8388608
+          keep: 3

@@ -1,170 +1,65 @@
 /**
- * dsh-cybernetics — 控制论内核 v4 运行时（DeepSeek Harness 插件）
+ * dsh-cybernetics — 逻辑控制 + 可靠性运行时（v5.0）
  *
- * v4.6（2026-11-01，对照《工程控制论》二次精读 + 17.5 天实测标定，8 项）：
- *   P0-1 误差信号补盲：bash 非零退出码计入 delta（实测 9141 次 bash 命令级真失败 3.74%，
- *        原回路只看见 isError 的 1.0%）——占 60% 调用量的主失败模式此前完全不可见
- *   P0-2 判据解耦：删 adaptiveAlpha（实测共线性 100%，与 divergence 信息完全重叠），
- *        pHat 回归恒 alphaLow 慢统计
- *   P0-3 阈值标定 + 执行器兑现：escalateAt 0.6→0.20；稳定阀改「基线−档位收缩量」
- *        （原 MODE_LIMITS 被 patch 短路，档位切换对阈值零影响，告警文案却印 5/4/3）
- *   P1-4 熵告警加旁证门控（实测 62% 会话无任何旁证）
- *   P1-5 前馈模式锚定命令起始位（849 次命中 0 拦截，还能误中路径里的 npm 字样）
- *   P1-6 删装饰字段 feedforwardBlocks / blocked（恒零）
- *   P1-7 EMA 增益按 Δt 归一（实测 dt p50=218ms / p99=134s，跨 5 个数量级）
- *   P1-8 verify-on-stop 精度：单次 write（多为新建）不提醒，实测占触达的 76%
+ * 2026-11-08 重构，对照《工程控制论》（钱学森/宋健·第三版）：
+ *   第十七章 逻辑控制/有限自动机 → logic.mjs：0/1 序列上的显式状态机、滞环、单次告警
+ *   第十九章 冗余技术和容错系统   → reliability.mjs：λ、MTBF、k/N 冗余、故障分类、自检
+ *   第二十一章 大系统             → cybernetics_rollup：下层会话自治、上层跨会话汇总
+ *   删除：EMA/pHat、档位机、稳定阀、熵、振荡、healthScore、adaptiveAlpha、前馈规则表。
+ *   删除理由：那些是给有运动方程的物理受控对象用的（第一至十五章），agent 的工具调用
+ *   是离散逻辑序列（第十七章）与可靠性问题（第十九章），套错了章节。
  *
- * v4.5（2026-10-28，verify-on-stop 守卫，灵感 [arXiv:2609.00006] Hermes）：
- *   完成声明纪律从 prompt 自觉下沉为机制——本 turn 有 write/edit 写入但无
- *   read/grep/glob 回读 → turn 边界注入提醒 + logState 事件 verify-on-stop。
- *   判定只看工具调用事实（control.mjs trackWriteVerify/verifyOnStopWarn），
- *   不做文件级配对（YAGNI）；单测覆盖三态（写入无回读/写入+回读/纯回读）。
- *
- * v0.2.1（2026-10-15，修 6 处运行期缺陷）：
- *   1. 警告注入恒失效：@deepseek-ai/dsh-llm 裸导入在插件真实目录不可解析，且失败即整批丢弃
- *      → 等价兜底消息工厂 + 注入失败回队 + 留痕（原日志 9/9 dropped-warn）
- *   2. 稳定阀按 step 清零（`maxToolCallsPerTurn` 永不触发，22h 0 命中）→ 按 turn 边界清零；
- *      且 patch 基线原为死配置，现 patch 值优先（5→25）
- *   3. 前馈正则被 YAML 单引号写成双反斜杠（`test('git status')===false`，从未命中）→ 单反斜杠
- *   4. 沙箱提权无审批门（一次调用即可自我授予全盘写权）→ tools/pre-execute 返回 {kind:'ask'}
- *   5. agent/disposed 误用 waterfall 签名（emit 事件无 next，每次销毁抛错）→ emit 形态
- *   6. cybernetics_check 工具集取 agent scope ∪ 全局视图（原把可用的 grep 报成 missing）
- *
- * v0.2.0（2026-10-14，dsh 0.2 适配 + 规则收敛）：
- *   适配 1 删除 `export const Config = null`（Config 不导出才安全，null 会崩设置页）
- *   适配 2 feedforward 规则表删除不可逆写入类（irreversible-write 等）拦截规则——
- *      「批不批」收敛到 dsh-approval-gate；本插件只保留 retry/timeout 类「放行+警告」
- *   适配 3 agent/pre-step 注入 source 改 v4 形态 { kind: 'plugin:dsh-cybernetics' }
- *      （旧 { kind:'plugin', plugin:... } 形态被 0.2 v4 校验器直接拒绝）
- *
- * v4.3（2026-08-25，对照《工程控制论》精读 + state_log 实测，5 项修正）：
- *   D1 发散直通升档：连续失败（divergenceStreak≥阈值）直接升档，不再依赖 pHat——
- *      修复"发散告警 7 次但 pHat 卡 0.488 推不动档位"的解耦缺陷（core.adjustControlPure）
- *   D2 升档对称防抖：pHat 升档需连续 escalateStreak 次防抖，与降档对称——
- *      修复"突发失败→瞬间升到顶→快速降回"的档位抖动
- *   D3 自适应增益：连续失败时大 α（alphaHigh）快速跟上现实，稳态小 α（alphaLow）强滤波抗抖动
- *      （core.adaptiveAlpha，对照 15.11 卡尔曼自适应增益的工程简化）
- *   D4 保守档饱和兜底：conservative 下仍连续失败（≥saturationStreak）→ 注入"求助/人工介入"提示
- *   D5 熵告警豁免 subagent（UUID sid）——专注型批量任务工具单一化是正常行为；FS_NOT_OBSERVED
- *      失败兜底提示"先 read 再写"；异步 job pre/result 按 exec.__cyber 快照配对（修耗时/预测错位）
- *
- * v4.2（2026-08-19，13 项完善，对照 v4.1 实测反馈）：
- *   A1 修复冗余 hash 假误报（exec.args 恒 undefined → 改用 execArgsText 参数文本）
- *   A2 观测完整率钳制 ≤1（孤儿 result 不再把分子顶破）
- *   A3 boot 日志回放恢复状态（pHat/档位跨重启续算，消除系统失忆）
- *   B4 信息熵告警（工具单一化 = 死循环/偏执信号，带滞环防抖）
- *   B5 工具耗时观测（dtMs 入日志 + 最慢 TOP3）
- *   B6 agent/disposed 会话汇总事件（session-summary，供周检 automation）
- *   B7 按 session 分区状态（并发会话不互相污染 pHat/档位/计数）
- *   C8 冗余事件聚合记录（不再逐条刷日志）
- *   C9 status 内存态与日志回放态交叉校验（漂移标注）
- *   C10 版本常量统一 VERSION
- *   C11 警告注入失败留痕（dropped-warn）
- *   C12 纯函数下沉 core.mjs + node:test 单元测试
- *   C13 健康评分 healthScore（0-100）
- *
- * v4.1 对照《工程控制论》（钱学森/宋健·第三版）：
- *   P0-1 反馈回路闭合：EMA 滤波估计失败率 pHat，负反馈控制律驱动模式档位自适应
- *        （fast→deep→conservative），档位调节稳定阀阈值与提醒强度
- *   P0-2 能控性自检修复：可用工具集 = 插件工具 ∪ 被动观测到的宿主工具
- *   P1-1 一阶递归滤波（EMA）估计真实失败率，替代 v3 的二值 y_pred
- *   P1-2 发散检测（连续失败）与振荡检测（结果翻转率）
- *   P2   工具分布香农熵、冗余调用检测、能观性自检——观测完整率、
- *        前馈规则工具名白名单
- *
- * 结构（经典控制回路）：
- *   观测器    内存状态（按 session 分区）+ JSONL 持久化（stateLog）
- *   前馈控制  tools/pre-execute：规则表「放行+警告」（retry/timeout 类；
- *             不可逆拦截规则已收敛到 dsh-approval-gate）+ 本轮调用计数
- *   反馈校正  tools/result：delta → EMA → 控制律（档位自适应 + 发散/振荡检测）
- *   执行器    cybernetics_snap / cybernetics_status / cybernetics_check
- *             / cybernetics_sandbox_mode
- *   能控性    目标 + 所需工具 vs 当前可用工具 自检
+ * 保留：verify-on-stop（第十九章自检）、sandbox_mode（宿主能力）、JSONL 观测与轮转。
  */
 import { mkdirSync, appendFileSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { resolve, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import {
-  VERSION,
-  DEFAULT_MODES,
-  MODE_ORDER,
-  valveFor,
-  DEFAULT_FEEDFORWARD,
-  ema,
-  detectOscillationPure,
-  adjustControlPure,
-  execArgsText,
-  redundantHash,
-  computeEntropyPure,
-  entropyGatePure,
-  classifyToolError,
-  BASH_TOOLS,
-  bashExitDelta,
-  textContentOf,
-} from './core.mjs'
-import { normalizeFeedforward, normalizeModes, createSessionState, makeInjectedUserMessage } from './state.mjs'
-import { makeControl } from './control.mjs'
+import { VERSION, BASH_TOOLS, bashExitDelta, callSignature, textContentOf, execArgsText } from './core.mjs'
+import { classifyFault, classifyBashExit, createReliability, recordResult, DEFAULT_RETRY_BUDGET } from './reliability.mjs'
+import { step as logicStep, DEFAULT_LOGIC } from './logic.mjs'
+import { createSessionState, makeInjectedUserMessage } from './state.mjs'
+import { makeRuntime } from './runtime.mjs'
 import { registerCyberneticsTools } from './tools.mjs'
 
 export const name = 'dsh-cybernetics'
 export const inject = ['tools', 'agents']
 
 export function apply(ctx, config = {}) {
-  // ---------- 配置兜底合并 ----------
-  // stateLog / observedToolsFile 支持 '~' 前缀（cordis.patch.yml 配置常带字面 '~'）
   function expandHome(p) {
     if (typeof p !== 'string' || p === '') return p
     if (p === '~') return homedir()
     if (p.startsWith('~/')) return join(homedir(), p.slice(2))
     return p
   }
+
   const stateLogPath = expandHome(config.stateLog) || resolve(homedir(), '.dsh', 'cybernetics', 'state_log.ndjson')
   const cfg = {
     stateLog: stateLogPath,
     observedToolsFile: expandHome(config.observedToolsFile) || join(dirname(stateLogPath), 'observed_tools.json'),
-    feedforward: normalizeFeedforward(config.feedforward),
-    stability: { maxToolCallsPerTurn: config.stability?.maxToolCallsPerTurn ?? 5 },
-    modes: normalizeModes(config.modes),
-    control: {
-      alpha: config.control?.alpha ?? 0.2,             // EMA 滤波系数（旧；被 alphaLow/dt0Ms 取代，兼容保留）
-      alphaLow: config.control?.alphaLow ?? config.control?.alpha ?? 0.15, // 稳态增益（v4.6 起为唯一增益）
-      dt0Ms: config.control?.dt0Ms ?? 250,             // v4.6 P1-7 采样基准周期（实测 p50≈218ms）
-      escalateAt: config.control?.escalateAt ?? 0.2,   // 升档阈值（v4.6 实测标定：0.6→0.20）
-      deescalateAt: config.control?.deescalateAt ?? 0.15, // 降档阈值（失败率低）
-      deescalateStreak: config.control?.deescalateStreak ?? 5, // 降档防抖连续次数（滞环）
-      escalateStreak: config.control?.escalateStreak ?? 3,     // v4.3 升档防抖连续次数（对称滞环）
-      divergenceStreak: config.control?.divergenceStreak ?? 3, // 连续失败判定发散
-      saturationStreak: config.control?.saturationStreak ?? 6, // v4.3 保守档饱和求助阈值
-      oscillationWindow: config.control?.oscillationWindow ?? 10, // 振荡检测窗口
-      oscillationRatio: config.control?.oscillationRatio ?? 0.7,  // 翻转率阈值
-      redundantWindow: config.control?.redundantWindow ?? 20,     // 冗余/熵窗口
-      manualModeMs: config.control?.manualModeMs ?? 60000,        // snap 手动模式持续
-      entropyWarnAt: config.control?.entropyWarnAt ?? 1.0,        // B4 低熵告警阈值
-      entropyRecoverAt: config.control?.entropyRecoverAt ?? 1.5,  // B4 熵恢复阈值（滞环）
-      healthWindow: config.control?.healthWindow ?? 300,          // v4.7 健康分窗口（跨会话，样本数）
+    logic: { ...DEFAULT_LOGIC, ...(config.logic ?? {}) },
+    reliability: {
+      minSamples: config.reliability?.minSamples ?? 5,
+      retryBudget: { ...DEFAULT_RETRY_BUDGET, ...(config.reliability?.retryBudget ?? {}) },
+    },
+    log: {
+      maxBytes: config.log?.maxBytes ?? 8 * 1024 * 1024,
+      keep: config.log?.keep ?? 3,
     },
   }
   const logFile = resolve(cfg.stateLog)
 
-  // ---------- 1. 全局状态（跨会话）：工具发现、前馈统计、恢复种子 ----------
+  // ---------- 全局状态（跨会话） ----------
   const state = {
     totalToolCalls: 0,
-    feedforwardHits: 0,
-    // v4.7 健康分窗口：跨会话滚动记录最近 N 次调用的成败，供 healthWindowPure 计算。
-    // 会话级评分必饱和（实测失败率中位数 0），窗口级才有分布；preTotal/resTotal 用于算真观测缺口。
-    window: [],
-    preTotal: 0,
-    resTotal: 0,
-    observedTools: new Set(),    // 已知工具：插件 ∪ 历史记忆 ∪ 本次观测（P0-2）
-    obsPersistedSize: 0,         // 已落盘的观测集大小（变更才写盘）
-    bySession: new Map(),        // B7: sid → sessionState
-    pHatSeed: 0,                 // A3: 重启恢复的全局失败率种子
-    autoModeSeed: 'fast',        // A3: 重启恢复的档位种子
-    recovered: null,             // A3: 恢复摘要（日志回放结果）
+    observedTools: new Set(['cybernetics_status', 'cybernetics_snap', 'cybernetics_rollup', 'cybernetics_check', 'cybernetics_sandbox_mode']),
+    obsPersistedSize: 0,
+    bySession: new Map(),
+    reliability: createReliability(),
+    wastedRetries: 0,
+    recovered: null,
   }
-  // 插件自身工具先行登记，避免冷启动时自检误报
-  for (const t of ['cybernetics_snap', 'cybernetics_status', 'cybernetics_check', 'cybernetics_sandbox_mode']) state.observedTools.add(t)
-  // v4.1 观测记忆：boot 恢复上次会话观测到的宿主工具（消除冷启动能控性误报）
+
+  // 观测记忆：冷启动或缺工具时避免误报
   try {
     if (existsSync(cfg.observedToolsFile)) {
       const remembered = JSON.parse(readFileSync(cfg.observedToolsFile, 'utf8'))
@@ -172,34 +67,37 @@ export function apply(ctx, config = {}) {
     }
   } catch { /* 记忆损坏则从空开始 */ }
   state.obsPersistedSize = state.observedTools.size
+
   function persistObservedTools() {
     try {
       mkdirSync(dirname(cfg.observedToolsFile), { recursive: true })
       writeFileSync(cfg.observedToolsFile, JSON.stringify([...state.observedTools].sort()))
       state.obsPersistedSize = state.observedTools.size
-    } catch { /* 持久化失败不阻断控制回路 */ }
+    } catch { /* 持久化失败不阻断观测 */ }
   }
 
+  const rt = makeRuntime({ cfg, state, logFile })
+
+  let appends = 0
   function logState(entry) {
     try {
       mkdirSync(dirname(logFile), { recursive: true })
       appendFileSync(logFile, JSON.stringify(entry) + '\n')
-    } catch {
-      // 观测失败不阻断控制回路
-    }
+      appends += 1
+      if (appends % 200 === 0) rt.rotateIfNeeded()
+    } catch { /* 观测失败不阻断业务 */ }
   }
 
-  // ---------- 会话路由（B7） ----------
-  // rc.6 的 exec/agent 挂 session；无 session 的调用路径（如 cron/后台）归入 'global' 兜底
+  // ---------- 会话路由 ----------
   function sidOf(exec) {
     return exec?.agent?.session?.id ?? exec?.session?.id ?? 'global'
   }
   function getSessionState(sid) {
     let s = state.bySession.get(sid)
     if (!s) {
-      s = createSessionState(sid, { pHat: state.pHatSeed, autoMode: state.autoModeSeed })
+      s = createSessionState(sid)
       state.bySession.set(sid, s)
-      logState({ ts: Date.now(), event: 'session-start', sid, seedPHat: s.pHat, seedMode: s.autoMode })
+      logState({ ts: Date.now(), event: 'session-start', sid })
     }
     return s
   }
@@ -207,82 +105,23 @@ export function apply(ctx, config = {}) {
     return getSessionState(sidOf(exec))
   }
 
-  // ---------- 控制律与状态回放（2026-10-25 下沉 control.mjs，verbatim；模块预算治理） ----------
-  const { pushResultBuf, queueWarn, currentMode, adjustControl, recoverStateFromLog, replayPHat, slowestTools, healthOf, matchFeedforward, trackWriteVerify, verifyOnStopWarn } = makeControl({ cfg, state, logState, logFile })
-
-  // ---------- 2. tools/pre-execute：计数 + 前馈拦截 + 观测收集（B7 会话级） ----------
+  // ---------- tools/pre-execute：计数、观测、沙箱审批门、调用签名 ----------
   ctx.on('tools/pre-execute', (exec, next) => {
     const toolName = exec?.name || exec?.tool || exec?.id || 'unknown'
     const now = Date.now()
     const sid = sidOf(exec)
     const s = sessionOf(exec)
     state.totalToolCalls += 1
-    state.preTotal += 1 // v4.7 观测缺口分母
     s.toolCallsInTurn += 1
-    s.totalSessionCalls += 1
-    state.observedTools.add(toolName) // P0-2：被动观测宿主工具
+    state.observedTools.add(toolName)
     s.sessionObserved.add(toolName)
-    trackWriteVerify(s, toolName) // v4.5 verify-on-stop：本 turn 写入/回读计数
+    rt.trackWriteVerify(s, toolName)
     if (state.observedTools.size !== state.obsPersistedSize) persistObservedTools()
 
-    // P2 冗余/熵窗口（A1 修复：hash 基于参数文本，见 core.redundantHash）
-    const hash = redundantHash(toolName, exec)
-    const isRedundant = s.recentCalls.some((c) => c.tool === toolName && c.hash === hash)
-    if (isRedundant) {
-      s.redundantCalls += 1
-      // C8：聚合记录，不逐条刷日志（首次与每 10 次各记一条）
-      if (s.redundantCalls === 1 || s.redundantCalls % 10 === 0) {
-        logState({ ts: now, event: 'redundant-burst', sid, count: s.redundantCalls })
-      }
-    }
-    s.recentCalls.push({ tool: toolName, hash, ts: now })
-    if (s.recentCalls.length > cfg.control.redundantWindow) s.recentCalls.shift()
-    s.entropy = computeEntropyPure(s.recentCalls)
-
-    // B4 熵告警（低熵 = 工具单一化 → 可能死循环/偏执；带滞环防抖）
-    // 2026-08-23 豁免：automation/lark 固定流程会话天然单工具，低熵是正常行为非偏执
-    // （周检实测：48 次 entropy-warn 中 automation 9 + lark 7 = 16 次确定性误报，占 1/3）
-    // 2026-08-23 豁免 automation/lark（固定流程天然单工具）；2026-08-25 扩展 subagent——
-    // 专注型批量任务（连续 read 一本书/批量文件）工具单一化是正常行为，非死循环/偏执
-    // subagent 会话 sid 为 UUID 格式（如 e28b9019-0487-…），与正常 session 的 session-xxx 前缀区分
-    const entropyExempt = /^(dsh-automation|automation|lark)/.test(sid) ||
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sid)
-    // v4.6 P1-4：低熵必须带旁证才算「循环/偏执」——同期窗口内有同参数重复调用，
-    // 或已判定发散/振荡。实测 202 次告警里仅 12.1% 有此类旁证，88% 是「专注型批量作业」被误伤。
-    const windowDup = new Set(s.recentCalls.map((c) => c.hash)).size < s.recentCalls.length
-    const entropyCorroborated = entropyGatePure({
-      redundantCalls: windowDup ? 1 : 0,
-      divergence: s.divergence,
-      oscillation: s.oscillation,
-    })
-    // 2026-11-01：补记 gate 判据输入，供 rollup 用「同源口径」算误报率
-    //   背景：rollup 原用「是否发出过 divergence/oscillation/redundant 告警事件」当旁证，
-    //   而 gate 用的是三项即时状态值——两边口径不同，34/56 的"误报"大半是假账。
-    //   只在本轮构成低熵候选时记一行，避免每步都写日志。
-    if (s.recentCalls.length >= 8 && s.entropy < cfg.control.entropyWarnAt) {
-      logState({ ts: now, event: 'entropy-gate', sid, entropy: s.entropy,
-                 window: s.recentCalls.length, redundantCalls: windowDup ? 1 : 0,
-                 divergence: s.divergence, oscillation: s.oscillation,
-                 corroborated: entropyCorroborated, exempt: entropyExempt,
-                 warned: s.entropyWarned })
-    }
-
-    if (!entropyExempt && entropyCorroborated && s.recentCalls.length >= 8 && s.entropy < cfg.control.entropyWarnAt && !s.entropyWarned) {
-      s.entropyWarned = true
-      logState({ ts: now, event: 'entropy-warn', sid, entropy: s.entropy, window: s.recentCalls.length })
-      queueWarn(s, `[控制律] 工具分布熵 ${s.entropy.toFixed(2)} 过低（<${cfg.control.entropyWarnAt}，最近 ${s.recentCalls.length} 次调用工具单一化），疑似陷入循环/偏执，请检查当前策略并多样化工具使用`)
-    } else if (s.entropy >= cfg.control.entropyRecoverAt) {
-      s.entropyWarned = false // 恢复条件（滞环）
-    }
-
-    // 沙箱提权门（v0.2.1 新增）
-    // 原实现只写 sandbox/mode、无任何确认 ⇒ 一次工具调用即可自我授予 danger-full-access
-    // （任意目录写），唯一约束是工具描述里那句"需用户确认"（提示词级，不可强制）。
-    // 宿主的正规路径是逐操作的 sandbox_permissions 升级（要批准往返）。此处把提权挂进
-    // 同一道宿主审批门：返回 {kind:'ask'} → ctx.approval.request → allowed-once 才执行。
+    // 沙箱提权走宿主审批门（保留 v0.2.1 的正确行为：一次调用不能自我授予全盘写权）
     const SANDBOX_RANK = { 'read-only': 0, 'workspace-write': 1, 'danger-full-access': 2 }
     if (toolName === 'cybernetics_sandbox_mode') {
-      const target = String(exec?.arguments?.mode ?? exec?.args?.mode ?? '')
+      const target = argMode(exec)
       const rank = SANDBOX_RANK[target]
       const isEscalation = rank === 2 || (rank === 1 && s.sandboxMode === 'read-only')
       if (isEscalation) {
@@ -298,87 +137,27 @@ export function apply(ctx, config = {}) {
       }
     }
 
-    // 前馈：高风险/不可逆操作 → 批准门（dry-run+confirm）或放行+警告（retry+timeout）
-    const hit = matchFeedforward(exec)
-    if (hit) {
-      state.feedforwardHits += 1
-      const isAsk = hit.action.strategy === 'dry-run+confirm' // 不可逆操作：强制批准门
-      if (isAsk) {
-        // ask 分支会提前 return（走审批），单独留痕；放行分支则由下方统一的 pre-execute
-        // 一条记录带 feedforward 字段，避免同一调用写两条 pre-execute。
-        logState({ ts: now, event: 'feedforward-ask', sid, tool: toolName, feedforward: hit.id, strategy: hit.action.strategy })
-      }
-      if (isAsk) {
-        // 批准门：返回 {kind:'ask'}，工具中心走 ctx.approval.request 弹批准，
-        // allowed-once 放行执行；rejected/cancelled/unavailable 一律不执行（fail closed）
-        return {
-          kind: 'ask',
-          reason: `[前馈·批准门] 规则「${hit.id}」命中不可逆/破坏性操作（${toolName}: ${execArgsText(exec).slice(0, 120)}），需要你批准后才执行`,
-        }
-      }
-      // retry+timeout（网络不稳定类）规则：不得硬拦截——原实现 kind:'block' 没有任何确认/重试
-      // 放行路径，会把 git/npm/curl/wget/pnpm 命令永久阻断。修正：记录命中、注入警告、放行执行。
-      s.pendingWarns.push(`[前馈] 规则「${hit.id}」命中 ${toolName}（${hit.action.strategy}）：已放行；网络类命令若失败请带超时重试`)
-      // v0.2.1：这里不再 `return next()`——放行后继续走稳定阀/耗时起点/exec.__cyber 配对，
-      // 否则该次调用缺 exec.__cyber，result 迟到时会与下一次调用错配（B5 配对失效）。
-    }
-
-    // 稳定阀（本轮窗口，会话级）：超限降级为警告，交互/观测工具豁免
-    const modeNow = currentMode(s)
-    // v4.6 P0-3：阈值 = 基线 − 档位收缩量（基线 25 → fast 25 / deep 20 / conservative 15）。
-    // 原实现 `cfg.stability.maxToolCallsPerTurn ?? MODE_LIMITS[modeNow]`：patch 恒有值 ⇒ 档位
-    // 永远影响不到阈值，升档降档对受控量零作用（档位只剩下"警告重复几次"这点区别）。
-    const maxPerTurn = valveFor(modeNow, cfg.stability.maxToolCallsPerTurn)
-    const overLimit = s.toolCallsInTurn > maxPerTurn
-    const exempt = toolName === 'ask_user_question' || toolName === 'cybernetics_snap' || toolName === 'cybernetics_status' || toolName === 'cybernetics_check' || toolName === 'cybernetics_sandbox_mode'
-    if (overLimit && !exempt) {
-      // conservative 档持续提醒；fast/deep 档超限只提醒一次（复位机制）
-      if (modeNow === 'conservative' || !s.warnedOverLimit) {
-        s.warnedOverLimit = true
-        logState({
-          ts: now,
-          event: 'stability-warn',
-          sid,
-          tool: toolName,
-          turn: s.toolCallsInTurn,
-          max: maxPerTurn,
-          mode: modeNow,
-        })
-        queueWarn(s, `[稳定性提示] 工具调用窗口 ${s.toolCallsInTurn}/${maxPerTurn}（模式 ${modeNow}），请收敛：合并操作、减少重复调用。`)
-      }
-    } else if (!overLimit) {
-      s.warnedOverLimit = false
-    }
-
-    // B5 耗时起点 + 记录预测 y_pred（= 滤波失败率 pHat）并放行
-    // v4.3 异步配对：把起点快照挂在 exec 对象上，result 按同一 exec 引用配对，
-    // 避免异步 job/subagent 的 result 迟到导致耗时/预测错位（对照第 11 章时滞）
-    exec.__cyber = { startedAt: now, yPred: s.pHat }
+    // 调用签名挂在 exec 上，result 按同一 exec 引用配对（异步 job 也不会错位）
+    exec.__cyber = { startedAt: now, sig: callSignature(toolName, exec) }
     s.lastStartTs = now
     s.lastStartTool = toolName
-    s.yPred = s.pHat
     s.preExecCount += 1
-    logState({
-      ts: now,
-      event: 'pre-execute',
-      sid,
-      tool: toolName,
-      y_pred: s.yPred,
-      ...(hit ? { feedforward: hit.id, strategy: hit.action.strategy } : {}),
-    })
+    logState({ ts: now, event: 'pre-execute', sid, tool: toolName })
     return next()
   })
 
-  // ---------- 3. tools/result：反馈误差 → 滤波 → 控制律（B7 会话级 + B5 耗时） ----------
+  // ---------- tools/result：故障分类 → 可靠性计数 → 逻辑状态机 ----------
   ctx.on('tools/result', (exec, result) => {
     const sid = sidOf(exec)
-    const s = getSessionState(sid) // 孤儿 result 也会拉出会话（A2 配对口径）
+    const s = getSessionState(sid)
     const tool = exec?.name || exec?.tool || 'unknown'
+    const now = Date.now()
+    const meta = exec?.__cyber
+    const sig = meta?.sig || callSignature(tool, exec)
+
     const isError = !!(result && (result.isError === true || result.error != null || result.ok === false))
-    // v4.6 P0-1 误差信号补盲：bash 的命令失败不进 isError（只有 spawn 错/abort 才进），
-    // 只在输出里留一行 `[exit code: N]`。占 60% 调用量的主力工具，其主失败模式原回路完全看不见。
-    // 实测 9141 次 bash：工具级失败 1.0%，命令级真失败 3.74% ⇒ 原 delta 严重低估。
-    // 退出码优先取结构化字段 value.exitCode，取不到再从文本标记解析（两种形态实测都存在）。
+
+    // bash 的命令级失败不进 isError，只在输出里留 `[exit code: N]`；这是主要失败模式，必须单列
     let exitInfo = null
     if (!isError && BASH_TOOLS.has(tool)) {
       const structured = result?.value?.exitCode
@@ -386,89 +165,72 @@ export function apply(ctx, config = {}) {
       const code = Number.isFinite(structured) ? structured : m ? Number(m[1]) : null
       if (code !== null && code !== 0) exitInfo = bashExitDelta(code, execArgsText(exec))
     }
-    const delta = isError || exitInfo?.failed ? 1.0 : 0
-    s.lastDelta = delta
-    s.resultCount += 1
-    // v4.7 健康分窗口：跨会话滚动样本（会话级评分必饱和，见 core.healthWindowPure）
-    state.resTotal += 1
-    state.window.push({ tool, failed: delta === 1 })
-    if (state.window.length > cfg.control.healthWindow) state.window.shift()
+    const failed = isError || !!exitInfo?.failed
 
-    // B5 工具耗时（v4.3 异步配对：优先用 exec.__cyber 起点，fallback lastStartTs）
-    const meta = exec?.__cyber
-    const yPred = meta?.yPred ?? s.yPred
+    let kind = null
+    let errorType = null
+    let errMsg = null
+    if (failed) {
+      if (isError) {
+        const cls = classifyFault(result)
+        if (cls) {
+          kind = cls.kind
+          errorType = cls.errorType
+          errMsg = cls.errMsg
+        }
+      } else if (exitInfo) {
+        const cls = classifyBashExit(exitInfo)
+        kind = cls?.kind ?? 'unknown'
+        errorType = cls?.code ?? null
+      }
+      if (!kind) kind = 'unknown'
+    }
+
+    // 耗时观测
     let dtMs = null
     const startedAt = meta?.startedAt ?? s.lastStartTs
     if (startedAt) {
-      dtMs = Date.now() - startedAt
+      dtMs = now - startedAt
       const d = s.toolDurations.get(tool) ?? { totalMs: 0, count: 0 }
       d.totalMs += dtMs
       d.count += 1
       s.toolDurations.set(tool, d)
     }
 
-    // A2 观测完整率：钳制 ≤1（孤儿 result 不把分子顶破）
-    s.observationRate = s.preExecCount > 0 ? Math.min(1, s.resultCount / s.preExecCount) : 'n/a'
-    adjustControl(s, delta, dtMs)
-    const entry = {
-      ts: Date.now(),
-      event: 'result',
-      sid,
-      tool,
-      isError,
-      delta,
-      y_pred: yPred,
-      pHat: s.pHat,
-    }
-    // 方案 B（2026-08-19）：失败归因观测——errorType/errMsg 供周检第④项做根因分布
-    if (isError) {
-      const cls = classifyToolError(result)
-      if (cls) {
-        entry.errorType = cls.errorType
-        if (cls.errMsg) entry.errMsg = cls.errMsg
-        // v4.3 兜底：写/编辑前未 read 导致的沙箱拒绝 → 提示先 read（可消除的失败，对照第 5 章前馈意图）
-        if (cls.errorType === 'FS_NOT_OBSERVED') {
-          queueWarn(s, '[能控性兜底] 写/编辑文件被沙箱拒绝（FS_NOT_OBSERVED：目标文件本会话尚未 read）。请先用 read 工具读取该文件内容，再执行写/编辑。')
-        }
-      }
-    }
+    s.resultCount += 1
+    const entry = { ts: now, event: 'result', sid, tool, failed, delta: failed ? 1 : 0 }
+    if (kind) entry.kind = kind
+    if (errorType) entry.errorType = errorType
+    if (errMsg) entry.errMsg = errMsg
     if (dtMs != null) entry.dtMs = dtMs
-    // v4.6 P0-1：命令级退出码单列，供周检回滚/复核（benign=约定非零，如 grep 无匹配）
     if (exitInfo) {
       entry.exitCode = exitInfo.code
       if (exitInfo.token) entry.cmd = exitInfo.token
       if (exitInfo.benign) entry.exitBenign = true
     }
 
-    // ---------- 连续失败 → skill_search 兜底（2026-08-24 能控性补全） ----------
-    // 场景：模型遇到「读图/OCR/转换」等任务时用底层工具反复试错、连续失败，
-    //       却跳过技能库检索。此处复用 divergenceStreak（delta===1 递增、成功清零）
-    //       作为连续失败计数，达到阈值即注入强制提示，点名 skill_search 工具，
-    //       把「遇阻先查技能库」从模型自觉变成程序前馈（不依赖记性）。
-    // 豁免：skill_search / skill_mece_check / skill 本身——避免「检索失败→再提示检索」死循环。
-    const SKILL_DISCOVERY_TOOLS = new Set(['skill_search', 'skill_mece_check', 'skill', 'list_agents'])
-    if (isError && !SKILL_DISCOVERY_TOOLS.has(tool) && s.divergenceStreak >= 2 && !s.failedHintSent) {
-      s.failedHintSent = true
-      // v0.2.2（2026-10-27 实证，k3 会话 52 连跪）：①不回显失败调用的参数原文——
-      // 陷入模式锁定的模型会照抄上下文里的调用，回显 = 每轮再示范一遍错误写法；
-      // ②streak≥5 不再推 skill_search（实测方向跑偏：让人为 bash 查 OCR 技能），
-      // 改为命令式熔断：停手、换路、问用户。
-      logState({ ts: Date.now(), event: 'skill-search-fallback', sid, tool, streak: s.divergenceStreak })
-      if (s.divergenceStreak >= 5) {
-        queueWarn(s, `[能控性熔断] 已连续 ${s.divergenceStreak} 次失败。立即停止重复上一次调用——同样的参数不会再产出不同结果。` +
-          `请改用不同方法/参数，或直接用文字向用户说明卡点并请求指示。禁止原样重试。`)
-      } else {
-        queueWarn(s, `[能控性兜底] 连续 ${s.divergenceStreak} 次工具调用失败（工具：\`${tool}\`），疑似在用底层工具硬解、而非检索既有能力。` +
-          `请调用 \`skill_search\` 检索「${tool}」相关关键词，确认是否有对口技能/现成脚本（如 OCR、读图、转换类），` +
-          `再决定下一步；禁止在未检索技能库的情况下判定任务不可行。`)
-      }
+    // 可靠性计数（跨会话样本）
+    recordResult(state.reliability, tool, failed, kind)
+
+    // 浪费重试：确定性/致命失败后原样重试同一调用
+    if (rt.noteCall(s, { tool, sig, failed, kind, ts: now })) {
+      entry.wastedRetry = true
+      logState({ ts: now, event: 'wasted-retry', sid, tool })
+    }
+
+    // 逻辑控制：状态机推进，产生告警（一次事件段一条）
+    const next = logicStep(s.logic, { tool, failed, kind, hash: sig, ts: now }, cfg.logic)
+    s.logic = next.state
+    for (const a of next.alarms) {
+      s.alarmsInjected += 1
+      logState({ ts: now, event: 'alarm', sid, code: a.code, n: a.n, tool: a.tool, kind: a.kind ?? null })
+      rt.queueWarn(s, a.text)
     }
 
     logState(entry)
   })
 
-  // ---------- 3b. agent/pre-step：警告注入 + 本轮计数重置（B7 会话级 + C11 留痕） ----------
-  // 在请求组装前通过 waterfall enter 追加 user 消息（合并为一条，避免角色交替破坏）
+  // ---------- agent/pre-step：turn 边界结算 + 告警注入 ----------
   if (typeof ctx.on === 'function' && ctx.agents) {
     try {
       ctx.on('agent/pre-step', async (payload, next) => {
@@ -476,25 +238,17 @@ export function apply(ctx, config = {}) {
         if (!decision || decision.kind === 'reject') return decision
         const sid = payload?.agent?.session?.id ?? 'global'
         const s = getSessionState(sid)
-        // v0.2.1：稳定阀窗口修正——原实现每次 pre-step（**每个 step 都触发**）无条件清零，
-        // 计数只能覆盖单次模型回复内的并行调用（通常 ≤5），`maxToolCallsPerTurn: 5`
-        // 永远够不到（22h/516 次调用 stability-warn 0 次）。改为**按 turn 边界**清零。
         const turn = payload?.turn
         if (turn === undefined || s.currentTurn !== turn) {
           if (turn !== undefined) s.currentTurn = turn
-          // v4.5 verify-on-stop：turn 边界先结算上一轮——有写入无回读则注入提醒（机制化完成声明纪律）
-          const vsWarn = verifyOnStopWarn(s)
+          const vsWarn = rt.verifyOnStopWarn(s)
           if (vsWarn) {
             logState({ ts: Date.now(), event: 'verify-on-stop', sid, writes: s.turnWrites.length, tools: [...new Set(s.turnWrites)] })
-            queueWarn(s, vsWarn)
+            rt.queueWarn(s, vsWarn)
           }
           s.turnWrites = []
           s.turnVerifies = 0
           s.toolCallsInTurn = 0
-          s.warnedOverLimit = false
-          // v0.2.2：failedHintSent 移入 turn 边界块——原先在块外每 step 都重置，
-          // 导致同一 turn 内「能控性兜底」按 step 重复注入（52 连跪事件单 turn 注入 51 次）
-          s.failedHintSent = false
         }
         if (s.pendingWarns.length === 0) return decision
         const warns = s.pendingWarns
@@ -506,7 +260,6 @@ export function apply(ctx, config = {}) {
           })
           return { ...decision, messages: [...decision.messages, msg] }
         } catch (e) {
-          // C11：注入失败留痕 + v0.2.1 整批回队（原实现只在日志留痕，警告仍被丢弃且无重试）
           s.pendingWarns.unshift(...warns)
           logState({ ts: Date.now(), event: 'dropped-warn', sid, count: warns.length, error: String(e?.message || e) })
           return decision
@@ -515,57 +268,62 @@ export function apply(ctx, config = {}) {
     } catch { /* pre-step 不可用则跳过 */ }
   }
 
-  // ---------- 3c. agent/disposed：会话汇总（B6，供周检 automation / 复盘消费） ----------
-  // v0.2.1：`agent/disposed` 是 @mode emit（不是 waterfall），监听器只收到 `{agent}`，
-  // 原实现签名 `({agent}, next) => { …; return next() }` 每次销毁都抛 TypeError
-  // （被宿主吞掉记 warn）。emit 形态不调 next。
+  // ---------- agent/disposed：会话汇总（跨会话汇总的原料） ----------
   if (typeof ctx.on === 'function' && ctx.agents) {
     try {
       ctx.on('agent/disposed', ({ agent }) => {
         const sid = agent?.session?.id ?? 'unknown'
         const s = state.bySession.get(sid)
-        if (s) {
-          logState({
-            ts: Date.now(),
-            event: 'session-summary',
-            sid,
-            toolCalls: s.preExecCount,
-            results: s.resultCount,
-            pHatStart: s.startPHat,
-            pHatEnd: s.pHat,
-            modeEnd: s.mode,
-            lastModeSwitch: s.lastModeSwitch ? new Date(s.lastModeSwitch).toISOString() : null,
-            redundantCalls: s.redundantCalls,
-            entropy: s.entropy,
-            observationRate: s.observationRate,
-            observedTools: s.sessionObserved.size,
-            slowest: slowestTools(s).map((t) => `${t.tool}(${t.avgMs}ms)`),
-          })
-          state.bySession.delete(sid)
-        }
+        if (!s) return
+        logState({
+          ts: Date.now(),
+          event: 'session-summary',
+          sid,
+          toolCalls: s.preExecCount,
+          results: s.resultCount,
+          failed: state.reliability.k,
+          alarmsInjected: s.alarmsInjected,
+          wastedRetries: s.wastedRetries,
+          alarmActiveEnd: s.logic.alarmActive,
+          observedTools: s.sessionObserved.size,
+          slowest: rt.slowestTools(s).map((t) => `${t.tool}(${t.avgMs}ms)`),
+        })
+        state.bySession.delete(sid)
       })
     } catch { /* disposed 不可用则跳过 */ }
   }
 
-  // ---------- 4. 工具注册（2026-10-25 下沉 tools.mjs，snap/status/check/sandbox_mode 4 工具 verbatim） ----------
-  registerCyberneticsTools(ctx, { cfg, state, logState, sessionOf, sidOf, logFile, replayPHat, slowestTools, healthOf })
+  // ---------- 工具注册 + 启动回放 ----------
+  registerCyberneticsTools(ctx, { cfg, state, logState, sessionOf, sidOf, logFile, slowestTools: rt.slowestTools })
 
-  // ---------- 7. 注册完成：A3 恢复 + boot 日志 ----------
-  const recovered = recoverStateFromLog(500)
+  rt.rotateIfNeeded()
+  const recovered = rt.recoverFromLog(state.observedTools, 800)
+  state.recovered = recovered
   logState({
     ts: Date.now(),
     event: 'boot',
     plugin: name,
     version: VERSION,
-    mode: state.autoModeSeed,
-    feedforwardRules: cfg.feedforward.length,
-    // v4.6 P0-3：打印**生效阈值**（基线 − 档位收缩量），与实际用于比较的值同源
-    maxToolCallsPerTurn: valveFor(state.autoModeSeed, cfg.stability.maxToolCallsPerTurn),
-    control: cfg.control,
-    recovered: recovered ? state.recovered : null,
+    logic: cfg.logic,
+    reliability: { minSamples: cfg.reliability.minSamples, retryBudget: cfg.reliability.retryBudget },
+    log: cfg.log,
+    recovered,
   })
 
   return { state, logState }
 }
 
 export default { name, inject, apply }
+
+// 工具参数里的 mode：宿主一般传对象，兼容 JSON 字符串（测试/旧版本）
+function argMode(exec) {
+  const a = exec?.arguments ?? exec?.args
+  if (a && typeof a === 'object' && typeof a.mode === 'string') return a.mode
+  if (typeof a === 'string') {
+    try {
+      const o = JSON.parse(a)
+      if (typeof o?.mode === 'string') return o.mode
+    } catch { /* 非 JSON 忽略 */ }
+  }
+  return ''
+}
