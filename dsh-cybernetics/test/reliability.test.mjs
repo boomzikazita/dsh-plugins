@@ -14,6 +14,7 @@ import {
   toolEstimates,
   toolLine,
   rollupRecords,
+  kindFromLegacy,
   DEFAULT_RETRY_BUDGET,
 } from '../reliability.mjs'
 
@@ -161,4 +162,24 @@ test('rollupRecords：未配对调用按 pre-res 计（不为负）', () => {
   ]
   const r = rollupRecords(records, { since: 0, now: 10 })
   assert.equal(r.unpaired, 1)
+})
+
+test('旧日志 kind 推导：errorType / exitCode / 已知 kind 三种来源', () => {
+  assert.equal(kindFromLegacy({ kind: 'transient' }), 'transient')
+  assert.equal(kindFromLegacy({ errorType: 'sandbox-denied' }), 'deterministic')
+  assert.equal(kindFromLegacy({ errorType: 'FS_NOT_OBSERVED' }), 'agent')
+  assert.equal(kindFromLegacy({ errorType: 'timeout' }), 'transient')
+  assert.equal(kindFromLegacy({ errorType: 'other' }), 'unknown')
+  assert.equal(kindFromLegacy({ exitCode: 127 }), 'deterministic')
+  assert.equal(kindFromLegacy({ exitCode: 1, exitBenign: true }), 'unknown')
+  assert.equal(kindFromLegacy({}), 'unknown')
+})
+
+test('toolLine：零失败工具只报 n/λ/区间/MTBF，不印 0% 类型构成', () => {
+  const rel = createReliability()
+  for (let i = 0; i < 10; i += 1) recordResult(rel, 'write', false, null)
+  const est = toolEstimates(rel, { minSamples: 5 })[0]
+  const line = toolLine('write', est, { budget: { write: 0, default: 1 } })
+  assert.match(line, /无失败/)
+  assert.doesNotMatch(line, /类型:/)
 })

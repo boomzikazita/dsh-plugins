@@ -5,7 +5,7 @@
 //   2) 启动回放：从最近日志重建工具可靠性计数，否则每次重启 λ 归零；
 //   3) 自检与冗余口径：verify-on-stop（写后必读）与 wasted-retry（确定性失败后原样重试）。
 import { existsSync, readFileSync, renameSync, statSync } from 'node:fs'
-import { recordResult } from './reliability.mjs'
+import { recordResult, kindFromLegacy } from './reliability.mjs'
 
 export const WRITE_TOOLS = new Set(['write', 'edit'])
 export const VERIFY_TOOLS = new Set(['read', 'grep', 'glob', 'read_image', 'ops_inspect_local_file', 'ops_grep', 'ops_glob'])
@@ -85,7 +85,7 @@ export function makeRuntime({ cfg, state, logFile }) {
         if (e.event !== 'result') continue
         const tool = e.tool || 'unknown'
         const failed = e.failed === true || e.delta === 1
-        recordResult(state.reliability, tool, failed, failed ? e.kind : null)
+        recordResult(state.reliability, tool, failed, failed ? kindFromLegacy(e) : null)
         observedTools.add(tool)
         results += 1
         if (Number.isFinite(e.ts)) lastTs = e.ts

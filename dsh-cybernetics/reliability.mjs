@@ -135,6 +135,37 @@ export function retryBudgetOf(tool, budget = DEFAULT_RETRY_BUDGET) {
   return Number.isFinite(b[tool]) ? b[tool] : Number.isFinite(b.default) ? b.default : 1
 }
 
+// 旧日志（v4 时代）没有 kind 字段，只有 errorType / exitCode。回放时不要一律判"未归类"，
+// 否则历史样本会把故障构成统计拖成 100% unknown。
+const LEGACY_TYPE_MAP = {
+  'sandbox-denied': 'deterministic',
+  'not-found': 'deterministic',
+  'param-invalid': 'deterministic',
+  'edit-no-match': 'agent',
+  'edit-ambiguous': 'agent',
+  'FS_EDIT_NOT_FOUND': 'agent',
+  'FS_AMBIGUOUS_EDIT': 'agent',
+  'FS_NOT_OBSERVED': 'agent',
+  'FS_STALE_VERSION': 'agent',
+  network: 'transient',
+  timeout: 'transient',
+}
+
+/** 从旧格式日志行推导故障类型（回放/rollup 兼容用） */
+export function kindFromLegacy(e) {
+  if (!e) return 'unknown'
+  if (FAULT_KINDS.includes(e.kind)) return e.kind
+  if (Number.isFinite(e.exitCode) && e.exitCode !== 0 && !e.exitBenign) {
+    const c = classifyBashExit({ code: e.exitCode, benign: false, token: e.cmd })
+    return c?.kind ?? 'unknown'
+  }
+  if (typeof e.errorType === 'string') {
+    if (LEGACY_TYPE_MAP[e.errorType]) return LEGACY_TYPE_MAP[e.errorType]
+    if (FAULT_KINDS.includes(e.errorType)) return e.errorType
+  }
+  return 'unknown'
+}
+
 function fmtPct(x, digits = 1) {
   return `${(x * 100).toFixed(digits)}%`
 }
@@ -145,16 +176,21 @@ function fmtCI(lo, hi) {
 
 /** 单工具可靠性行（status/rollup 共用） */
 export function toolLine(tool, est, { budget } = {}) {
-  const kinds = est.kinds || zeroKinds()
-  const total = Object.values(kinds).reduce((a, b) => a + b, 0) || 1
-  const share = (k) => (kinds[k] / total) * 100
-  const transientShare = kinds.transient / total
   const b = retryBudgetOf(tool, budget)
-  const bound = retryRecoveryBound(est.rate, transientShare, b)
   const mtbf = est.mtbf == null ? '—' : est.mtbf.toFixed(1)
-  return `${tool}  n=${est.n}  λ=${fmtPct(est.rate)} ${fmtCI(est.lo, est.hi)}  MTBF=${mtbf}次/失败  ` +
-    `类型: 暂态${share('transient').toFixed(0)}% 确定${share('deterministic').toFixed(0)}% 可纠${share('agent').toFixed(0)}% 致命${share('fatal').toFixed(0)}%  ` +
-    `重试预算=${b} 可恢复上限=${fmtPct(bound)}`
+  const base = `${tool}  n=${est.n}  λ=${fmtPct(est.rate)} ${fmtCI(est.lo, est.hi)}  MTBF=${mtbf}次/失败`
+  const kinds = est.kinds || zeroKinds()
+  const total = Object.values(kinds).reduce((a, b) => a + b, 0)
+  if (!est.k || total === 0) return `${base}  无失败`
+  const share = (k) => (kinds[k] / total) * 100
+  const unknownOnly = kinds.unknown === total
+  const recover = unknownOnly
+    ? '—（未归类，无法估计）'
+    : kinds.transient === 0
+      ? '0%（无暂态故障，重试无收益）'
+      : fmtPct(retryRecoveryBound(est.rate, kinds.transient / total, b))
+  return `${base}  类型: 暂态${share('transient').toFixed(0)}% 确定${share('deterministic').toFixed(0)}% 可纠${share('agent').toFixed(0)}% 致命${share('fatal').toFixed(0)}%` +
+    `  重试预算=${b} 可恢复上限=${recover}`
 }
 
 /** 从可靠性计数器生成按工具的估计列表（按 λ 降序，n≥minSamples 优先） */
@@ -207,7 +243,7 @@ export function rollupRecords(records, { since = 0, now = Date.now() } = {}) {
     const tool = e.tool || 'unknown'
     // 兼容：新格式 failed/kind；旧格式 delta
     const failed = e.failed === true || e.delta === 1
-    const kind = failed ? (FAULT_KINDS.includes(e.kind) ? e.kind : 'unknown') : null
+    const kind = failed ? kindFromLegacy(e) : null
     recordResult(rel, tool, failed, kind)
     const sid = e.sid || 'unknown'
     const ps = perSession.get(sid) ?? { sid, n: 0, k: 0 }

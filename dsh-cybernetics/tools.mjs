@@ -55,7 +55,7 @@ export function registerCyberneticsTools(ctx, d) {
       const rel = state.reliability
       const est = rateEstimate(rel.k, rel.n)
       const lines = [
-        `[cybernetics] 状态 v${VERSION}（逻辑控制 + 可靠性）`,
+        `[cybernetics] 状态 ${VERSION}（逻辑控制 + 可靠性）`,
         `session=${sidOf(exec)}`,
         `调用/结果: ${s.preExecCount}/${s.resultCount}` +
           (s.preExecCount > 0 && s.resultCount !== s.preExecCount
@@ -150,7 +150,7 @@ export function registerCyberneticsTools(ctx, d) {
       const r = rollupRecords(records, { since })
       const est = rateEstimate(r.rel.k, r.rel.n)
       const lines = [
-        `[cybernetics] 跨会话汇总 v${VERSION}（最近 ${days} 天）`,
+        `[cybernetics] 跨会话汇总 ${VERSION}（最近 ${days} 天）`,
         `会话 ${r.sessions}  调用 ${r.res}  失败 ${r.rel.k}  λ=${fmtPct(est.rate)} ${fmtCI(est.lo, est.hi)}` +
           `  MTBF=${est.mtbf == null ? '—' : est.mtbf.toFixed(1)} 次/失败`,
         `未配对调用: ${r.unpaired}${r.pre > 0 ? `（${fmtPct(r.unpaired / r.pre)}）` : ''}  浪费重试: ${r.wastedRetries}`,
