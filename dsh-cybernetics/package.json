@@ -4,6 +4,17 @@
   "type": "module",
   "main": "index.js",
   "description": "控制论内核 v5（对照《工程控制论》重构）：第十七章逻辑控制（0/1 序列状态机告警、滞环、防重复注入）+ 第十九章冗余与容错（λ / MTBF / 95% 置信区间 / k-N 冗余重试上限 / 故障分类 / verify-on-stop 自检）+ 第二十一章大系统（跨会话 rollup）。删除 v4.x 的 EMA/pHat、档位机、稳定阀、熵、振荡、healthScore、adaptiveAlpha。",
+  "files": [
+    "index.js",
+    "core.mjs",
+    "state.mjs",
+    "tools.mjs",
+    "logic.mjs",
+    "reliability.mjs",
+    "runtime.mjs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
   "dependencies": {},
   "peerDependencies": {
     "@deepseek-ai/dsh": "*",
